@@ -19,6 +19,8 @@ Validation loss and perplexity, HellaSwag, LAMBADA, side by side with GPT-2 124M
 ## Demo
 A page on the team's Vercel Hobby team: type a prompt, scrub a slider across training checkpoints to watch it learn, press a button for new riddles, and see the benchmark table. In-browser (quantized ONNX / WebGPU) if feasible.
 
+Live (placeholder until checkpoints land): https://playground-lm.vercel.app
+
 ## Rules
 Free services only. Everything trained from scratch.
 
