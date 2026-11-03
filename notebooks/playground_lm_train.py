@@ -35,12 +35,34 @@
 #
 # | Env var | Meaning | Default |
 # |---|---|---|
+# | `PLM_STAGE` | Training stage preset: `A`, `B`, `C` — sets `max_steps` and milestones | unset |
+# | `PLM_MAX_STEPS` | Override the stage's `max_steps` | stage default, else 200_000 |
+# | `PLM_BATCH_SIZE` | Micro-batch size; `grad_accum_steps` is adjusted to keep the effective batch at 96 | `12` (P100); use `6` on T4 |
 # | `PLM_RUN_DIR` | Local checkpoint dir (survives within a session) | `/kaggle/working/runs/plm-001` |
 # | `PLM_DATA_DIR` | Directory with `train.bin`, `val.bin`, `tokenizer/` | `/kaggle/input/plm-data` |
 # | `PLM_REPO` | GitHub repo for release upload | `galactic-ai-team/playground-lm` |
 # | `PLM_RELEASE_TAG` | Release tag for checkpoints | `v0.1-checkpoints` |
 # | `PLM_RUN_ID` | Manifest run id | `plm-001` |
 # | `PLM_COMPILE` | Set to `1` to enable `torch.compile` | unset (off) |
+#
+# **Stage presets** (from `data/PRETRAIN_PLAN.md` token budgets, converted to
+# step counts at 98,304 tokens/step = 12 micro-batch × 8 accum × 1024 context):
+#
+# | Stage | Token budget | Approx steps | Milestones |
+# |---|---|---|---|
+# | A | 20M | 204 | 50, 100, 150, 204 |
+# | B | 200M | 2,035 | 500, 1000, 1500, 2035 |
+# | C | 1B | 10,172 | 2000, 5000, 8000, 10172 |
+#
+# `PLM_MAX_STEPS` overrides a stage's step count — useful for a 10-step
+# smoke test before a full run.
+#
+# **GPU memory note:** batch 12 fits on a P100 (16 GB) with bf16 (which the
+# P100 supports natively), but does NOT fit on a T4 (16 GB, no bf16). For T4,
+# set `PLM_BATCH_SIZE=6` — grad accum auto-adjusts to 16 to keep the effective
+# batch at 96. **The train_loop must use fp16 + GradScaler on T4**; the
+# notebook can only pass the batch size, so that fp16 handling is Codex's
+# responsibility in train/loop.py.
 #
 # `GH_TOKEN` must be set as a Kaggle secret with `repo` scope for the upload
 # step to work. Without it, training still runs; only checkpoint upload is
@@ -71,19 +93,82 @@ MODEL_CONFIG = {
     "context_len": 1024,
 }
 
+# --- Batch size + gradient accumulation --------------------------------
+# Defaults: micro-batch 12 × grad accum 8 = effective batch 96 (P100 with bf16).
+# Override PLM_BATCH_SIZE on hardware that needs a smaller micro-batch (T4).
+# grad_accum_steps is derived so the effective batch stays at 96, which
+# keeps the token-per-step count (and therefore LR schedule + max_steps)
+# constant across hardware.
+TARGET_EFFECTIVE_BATCH = 96
+DEFAULT_MICRO_BATCH = 12
+micro_batch = int(os.environ.get("PLM_BATCH_SIZE", str(DEFAULT_MICRO_BATCH)))
+if micro_batch <= 0:
+    raise ValueError(f"PLM_BATCH_SIZE must be positive, got {micro_batch}")
+if TARGET_EFFECTIVE_BATCH % micro_batch != 0:
+    raise ValueError(
+        f"PLM_BATCH_SIZE={micro_batch} does not divide "
+        f"TARGET_EFFECTIVE_BATCH={TARGET_EFFECTIVE_BATCH}; "
+        f"grad_accum_steps would not be an integer. "
+        f"Pick a divisor of {TARGET_EFFECTIVE_BATCH}: "
+        f"{[d for d in range(1, TARGET_EFFECTIVE_BATCH + 1) if TARGET_EFFECTIVE_BATCH % d == 0]}"
+    )
+grad_accum = TARGET_EFFECTIVE_BATCH // micro_batch
+
 # --- Training hyperparameters (used by this notebook + train_loop) -------
 TRAIN_CONFIG = {
-    "batch_size": 12,       # micro-batch on a single P100 (16GB)
-    "grad_accum_steps": 8,  # effective batch 96
+    "batch_size": micro_batch,
+    "grad_accum_steps": grad_accum,
     "lr": 6e-4,
     "warmup_steps": 2000,
     "weight_decay": 0.1,
     "grad_clip": 1.0,
 }
 
-# Manifest config: record both so a checkpoint's full training setup is
-# recoverable from manifest.json alone.
-MANIFEST_CONFIG = {"model": MODEL_CONFIG, "train": TRAIN_CONFIG}
+# --- Stage presets (from data/PRETRAIN_PLAN.md token budgets) -----------
+# Tokens per step = TARGET_EFFECTIVE_BATCH * context_len = 98,304. Stage
+# presets express token budgets; step counts stay constant across batch
+# overrides because the effective batch stays at 96.
+STAGE_PRESETS = {
+    "A": {"max_steps": 204, "milestones": (50, 100, 150, 204)},
+    "B": {"max_steps": 2035, "milestones": (500, 1000, 1500, 2035)},
+    "C": {"max_steps": 10172, "milestones": (2000, 5000, 8000, 10172)},
+}
+
+stage = os.environ.get("PLM_STAGE", "").upper() or None
+if stage is not None and stage not in STAGE_PRESETS:
+    raise ValueError(
+        f"PLM_STAGE={stage!r} is not a known stage "
+        f"(expected one of {sorted(STAGE_PRESETS)} or unset)"
+    )
+
+if stage is not None:
+    preset = STAGE_PRESETS[stage]
+    MAX_STEPS = preset["max_steps"]
+    SAVE_MILESTONES = preset["milestones"]
+else:
+    MAX_STEPS = 200_000
+    SAVE_MILESTONES = None
+
+# PLM_MAX_STEPS overrides both the stage preset and the 200k default.
+max_steps_env = os.environ.get("PLM_MAX_STEPS")
+if max_steps_env:
+    MAX_STEPS = int(max_steps_env)
+    print(f"[train] PLM_MAX_STEPS override → max_steps = {MAX_STEPS}")
+
+if micro_batch != DEFAULT_MICRO_BATCH:
+    print(
+        f"[train] PLM_BATCH_SIZE override → batch_size = {micro_batch}, "
+        f"grad_accum_steps = {grad_accum} (effective batch {micro_batch * grad_accum})"
+    )
+
+# Manifest config: full resolved training setup, recoverable from manifest.json.
+MANIFEST_CONFIG = {
+    "model": MODEL_CONFIG,
+    "train": TRAIN_CONFIG,
+    "stage": stage,
+    "max_steps": MAX_STEPS,
+    "tokens_per_step": TARGET_EFFECTIVE_BATCH * MODEL_CONFIG["context_len"],
+}
 
 # Make the src/ package importable when running from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -109,8 +194,7 @@ from playground_lm.train.upload_release import upload as upload_release
 # ## Device check
 #
 # Kaggle's free GPU is usually a P100 (16GB) or T4 (16GB). If neither is
-# available, training still runs on CPU — extremely slowly. A single batch
-# that takes ~0.2s on P100 takes ~15s on CPU.
+# available, training still runs on CPU — extremely slowly.
 #
 # `torch.compile` is opt-in (`PLM_COMPILE=1`). It can produce a meaningful
 # speedup but sometimes fails on older torch versions or Kaggle's specific
@@ -123,6 +207,9 @@ if device == "cpu":
     print("[train] WARNING: no GPU. This will be extremely slow.")
 else:
     print(f"[train] device: {torch.cuda.get_device_name(0)}")
+print(f"[train] stage: {stage or '(none)'}  max_steps: {MAX_STEPS}")
+print(f"[train] micro-batch: {micro_batch}  grad_accum: {grad_accum}  "
+      f"effective: {micro_batch * grad_accum}")
 print(f"[train] torch.compile: {'ON' if COMPILE else 'off (set PLM_COMPILE=1 to enable)'}")
 
 # %% [markdown]
@@ -176,16 +263,24 @@ optimizer = torch.optim.AdamW(
 #
 # Handles:
 # - Resume from the latest checkpoint if one exists in `RUN_DIR`.
-# - Save every ~30 min (via `interval_s`) and at milestone steps.
+# - Save every ~30 min (via `interval_s`) and at the stage's milestone steps.
 # - Keep the last N rolling checkpoints + all milestones.
 # - Emit a `manifest.json` the release script and demo frontend read.
+#
+# When `PLM_STAGE` is unset, milestones fall back to `CheckpointManager`'s
+# defaults (1000, 5000, 10000, ...). When it's set, the stage's milestones
+# are used so that even a 204-step Stage A run produces enough checkpoints
+# for the demo slider.
 
 # %%
-ckpt = CheckpointManager(
-    run_dir=RUN_DIR,
-    run_id=RUN_ID,
-    config=MANIFEST_CONFIG,
-)
+ckpt_kwargs = {
+    "run_dir": RUN_DIR,
+    "run_id": RUN_ID,
+    "config": MANIFEST_CONFIG,
+}
+if SAVE_MILESTONES is not None:
+    ckpt_kwargs["milestones"] = SAVE_MILESTONES
+ckpt = CheckpointManager(**ckpt_kwargs)
 
 start_step = 0
 start_tokens_seen = 0
@@ -210,7 +305,10 @@ if resumed is not None:
 # - Every save, uploads to the GitHub release (every `UPLOAD_EVERY_N_SAVES` saves).
 # - Every 500 steps, computes val loss on 20 val batches.
 #
-# The loop returns when `max_steps` is reached or when the user interrupts.
+# **T4 users:** `TRAIN_CONFIG["batch_size"]` is the micro-batch. `train_loop`
+# is responsible for reading `grad_accum_steps` from the config and applying
+# fp16 autocast + GradScaler on hardware without bf16 (T4). The notebook
+# doesn't touch precision; that's the loop's job.
 
 # %%
 def upload_hook(step: int, save_count: int) -> None:
@@ -238,12 +336,11 @@ try:
         train_loader=train_loader,
         val_loader=val_loader,
         checkpoint_manager=ckpt,
-        # loop.train needs context_len for tokens/step; it lives in MODEL_CONFIG.
-        config={**TRAIN_CONFIG, "context_len": MODEL_CONFIG["context_len"]},
+        config=TRAIN_CONFIG,
         start_step=start_step,
         start_tokens_seen=start_tokens_seen,
         start_wall_time_s=start_wall_time_s,
-        max_steps=200_000,
+        max_steps=MAX_STEPS,
         device=device,
         on_save=upload_hook,
     )
