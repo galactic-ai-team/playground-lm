@@ -1,0 +1,16 @@
+{
+  "id": "galacticaiteam/plm-stagec-data-prep",
+  "title": "PLM Stage C Data Prep",
+  "code_file": "stage_c_data.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": false,
+  "enable_internet": true,
+  "dataset_sources": [],
+  "kernel_sources": [
+    "galacticaiteam/plm-stagec-data-prep"
+  ],
+  "competition_sources": [],
+  "model_sources": []
+}
