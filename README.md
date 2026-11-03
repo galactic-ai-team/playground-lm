@@ -23,7 +23,7 @@ A page on the team's Vercel Hobby team: type a prompt, scrub a slider across tra
 Free services only. Everything trained from scratch.
 
 ## Layout
-- `plm/`: model, tokenizer wrapper, training loop (Python package)
+- `src/playground_lm/`: model, tokenizer, training loop (Python package)
 - `data/`: dataset collection and cleaning scripts
 - `notebooks/`: Kaggle/Colab training notebooks
 - `evals/`: benchmarks and eval prompts
