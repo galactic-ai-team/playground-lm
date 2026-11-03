@@ -21,3 +21,11 @@ A page on the team's Vercel Hobby team: type a prompt, scrub a slider across tra
 
 ## Rules
 Free services only. Everything trained from scratch.
+
+## Layout
+- `plm/`: model, tokenizer wrapper, training loop (Python package)
+- `data/`: dataset collection and cleaning scripts
+- `notebooks/`: Kaggle/Colab training notebooks
+- `evals/`: benchmarks and eval prompts
+- `demo/`: the demo page
+- `tests/`: pytest suite, run by CI on every push and PR
