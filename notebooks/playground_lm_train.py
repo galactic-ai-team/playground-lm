@@ -13,7 +13,7 @@
 #   2. Set the env vars in the "Config" cell (or via Kaggle secrets).
 #   3. Run all cells.
 #
-# The training loop lives in train/loop.py (Claude's lane). This notebook
+# The training loop lives in train/loop.py (Codex's lane). This notebook
 # imports it and drives it with checkpointing (my lane) and dataset loading
 # (Nova's + my dataloader).
 
@@ -40,6 +40,7 @@
 # | `PLM_REPO` | GitHub repo for release upload | `galactic-ai-team/playground-lm` |
 # | `PLM_RELEASE_TAG` | Release tag for checkpoints | `v0.1-checkpoints` |
 # | `PLM_RUN_ID` | Manifest run id | `plm-001` |
+# | `PLM_COMPILE` | Set to `1` to enable `torch.compile` | unset (off) |
 #
 # `GH_TOKEN` must be set as a Kaggle secret with `repo` scope for the upload
 # step to work. Without it, training still runs; only checkpoint upload is
@@ -59,15 +60,19 @@ REPO = os.environ.get("PLM_REPO", "galactic-ai-team/playground-lm")
 RELEASE_TAG = os.environ.get("PLM_RELEASE_TAG", "v0.1-checkpoints")
 RUN_ID = os.environ.get("PLM_RUN_ID", "plm-001")
 UPLOAD_EVERY_N_SAVES = int(os.environ.get("PLM_UPLOAD_EVERY", "4"))
+COMPILE = os.environ.get("PLM_COMPILE", "0") == "1"
 
-# Hyperparams mirror GPT-2 small (124M). Do not change without updating
-# model.py's defaults and the plan in README.md.
-CONFIG = {
+# --- Model architecture (passed to PlaygroundLM(**MODEL_CONFIG)) ---------
+MODEL_CONFIG = {
     "vocab_size": 50257,
     "n_layers": 12,
     "n_heads": 12,
     "d_model": 768,
     "context_len": 1024,
+}
+
+# --- Training hyperparameters (used by this notebook + train_loop) -------
+TRAIN_CONFIG = {
     "batch_size": 12,       # micro-batch on a single P100 (16GB)
     "grad_accum_steps": 8,  # effective batch 96
     "lr": 6e-4,
@@ -76,17 +81,21 @@ CONFIG = {
     "grad_clip": 1.0,
 }
 
+# Manifest config: record both so a checkpoint's full training setup is
+# recoverable from manifest.json alone.
+MANIFEST_CONFIG = {"model": MODEL_CONFIG, "train": TRAIN_CONFIG}
+
 # Make the src/ package importable when running from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # %% [markdown]
 # ## Imports from other lanes
 #
-# - `playground_lm.model.PlaygroundLM` (Claude): `forward(x, y=None) -> (logits, loss)`.
+# - `playground_lm.model.PlaygroundLM` (Codex / Claude): `forward(x, y=None) -> (logits, loss)`.
 # - `playground_lm.tokenizer.get_tokenizer()` (GPT-6): GPT-2 BPE via tiktoken.
 # - `playground_lm.train.data.build_dataloader` (mine): memmap'd uint16 token file.
 # - `playground_lm.train.checkpoint.CheckpointManager` (mine): save / resume / prune.
-# - `playground_lm.train.loop` (Claude): the training loop driver.
+# - `playground_lm.train.loop` (Codex): the training loop driver.
 
 # %%
 from playground_lm.model import PlaygroundLM
@@ -102,6 +111,11 @@ from playground_lm.train.upload_release import upload as upload_release
 # Kaggle's free GPU is usually a P100 (16GB) or T4 (16GB). If neither is
 # available, training still runs on CPU — extremely slowly. A single batch
 # that takes ~0.2s on P100 takes ~15s on CPU.
+#
+# `torch.compile` is opt-in (`PLM_COMPILE=1`). It can produce a meaningful
+# speedup but sometimes fails on older torch versions or Kaggle's specific
+# CUDA toolchain, so the default is off — a fresh session shouldn't crash on
+# compile.
 
 # %%
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -109,6 +123,7 @@ if device == "cpu":
     print("[train] WARNING: no GPU. This will be extremely slow.")
 else:
     print(f"[train] device: {torch.cuda.get_device_name(0)}")
+print(f"[train] torch.compile: {'ON' if COMPILE else 'off (set PLM_COMPILE=1 to enable)'}")
 
 # %% [markdown]
 # ## Data
@@ -126,15 +141,15 @@ else:
 # %%
 train_loader = build_dataloader(
     DATA_DIR / "train.bin",
-    context_len=CONFIG["context_len"],
-    batch_size=CONFIG["batch_size"],
+    context_len=MODEL_CONFIG["context_len"],
+    batch_size=TRAIN_CONFIG["batch_size"],
     shuffle=True,
     stride=1,
 )
 val_loader = build_dataloader(
     DATA_DIR / "val.bin",
-    context_len=CONFIG["context_len"],
-    batch_size=CONFIG["batch_size"],
+    context_len=MODEL_CONFIG["context_len"],
+    batch_size=TRAIN_CONFIG["batch_size"],
     shuffle=False,   # stride defaults to context_len (eval mode)
 )
 
@@ -142,15 +157,17 @@ val_loader = build_dataloader(
 # ## Model + optimizer
 #
 # `PlaygroundLM` is initialized from random init — no pretrained weights.
+# Only `MODEL_CONFIG` goes to the constructor; `TRAIN_CONFIG` stays in this
+# notebook and goes to `train_loop`.
 
 # %%
-model = PlaygroundLM(**CONFIG).to(device)
-if device == "cuda":
+model = PlaygroundLM(**MODEL_CONFIG).to(device)
+if COMPILE and device == "cuda":
     model = torch.compile(model)
 optimizer = torch.optim.AdamW(
     model.parameters(),
-    lr=CONFIG["lr"],
-    weight_decay=CONFIG["weight_decay"],
+    lr=TRAIN_CONFIG["lr"],
+    weight_decay=TRAIN_CONFIG["weight_decay"],
     betas=(0.9, 0.95),
 )
 
@@ -167,19 +184,26 @@ optimizer = torch.optim.AdamW(
 ckpt = CheckpointManager(
     run_dir=RUN_DIR,
     run_id=RUN_ID,
-    config=CONFIG,
+    config=MANIFEST_CONFIG,
 )
 
 start_step = 0
-if ckpt.resume(model, optimizer) is not None:
-    state = ckpt.resume(model, optimizer)
-    start_step = state["step"]
-    print(f"[train] resumed from step {start_step} ({state['tokens_seen']:,} tokens)")
+start_tokens_seen = 0
+start_wall_time_s = 0.0
+resumed = ckpt.resume(model, optimizer)
+if resumed is not None:
+    start_step = resumed["step"]
+    start_tokens_seen = resumed["tokens_seen"]
+    start_wall_time_s = resumed.get("wall_time_s", 0.0)
+    print(
+        f"[train] resumed from step {start_step} "
+        f"({start_tokens_seen:,} tokens, {start_wall_time_s:.1f}s wall)"
+    )
 
 # %% [markdown]
 # ## Train
 #
-# Everything below is driven by `train_loop` from Claude's lane. The loop:
+# Everything below is driven by `train_loop`. The loop:
 # - Runs forward+backward with `grad_accum_steps` accumulation.
 # - Applies the LR schedule (linear warmup, cosine decay).
 # - Every N steps, checks `ckpt.should_save(step)` and saves if due.
@@ -214,8 +238,10 @@ try:
         train_loader=train_loader,
         val_loader=val_loader,
         checkpoint_manager=ckpt,
-        config=CONFIG,
+        config=TRAIN_CONFIG,
         start_step=start_step,
+        start_tokens_seen=start_tokens_seen,
+        start_wall_time_s=start_wall_time_s,
         max_steps=200_000,
         device=device,
         on_save=upload_hook,
