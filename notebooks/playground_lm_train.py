@@ -161,11 +161,16 @@ if micro_batch != DEFAULT_MICRO_BATCH:
 TRAIN_CONFIG = {
     "batch_size": micro_batch,
     "grad_accum_steps": grad_accum,
+    # Required by train_loop (tokens_per_step); keep in sync with the model.
+    "context_len": MODEL_CONFIG["context_len"],
     "lr": 6e-4,
     "warmup_steps": WARMUP_STEPS,
     "weight_decay": 0.1,
     "grad_clip": 1.0,
 }
+# Optional: stop cleanly (after a save) before Kaggle's 12-hour session cap.
+if os.environ.get("PLM_MAX_SESSION_S"):
+    TRAIN_CONFIG["max_session_s"] = float(os.environ["PLM_MAX_SESSION_S"])
 
 MANIFEST_CONFIG = {
     "model": MODEL_CONFIG,
