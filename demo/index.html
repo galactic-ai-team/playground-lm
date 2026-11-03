@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PlaygroundLM: watch it learn</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <h1>PlaygroundLM</h1>
+  <p class="sub">A GPT-2-small-size model built from scratch by the AI Playground team.</p>
+
+  <section id="ckpt">
+    <label for="slider">Training checkpoint: <span id="ckpt-label">none yet</span></label>
+    <input id="slider" type="range" min="0" max="0" value="0" disabled>
+  </section>
+
+  <section id="prompt">
+    <label for="prompt-input">Prompt</label>
+    <textarea id="prompt-input" rows="3" placeholder="Type a prompt..."></textarea>
+    <div class="row">
+      <button id="generate" disabled>Generate</button>
+      <button id="riddle" disabled>New riddle</button>
+    </div>
+    <pre id="output" aria-live="polite"></pre>
+  </section>
+
+  <section id="bench">
+    <h2>Benchmarks</h2>
+    <table id="bench-table"><thead></thead><tbody></tbody></table>
+    <p id="bench-empty">No results yet. Training hasn't started.</p>
+  </section>
+</main>
+<script type="module" src="app.js"></script>
+</body>
+</html>
