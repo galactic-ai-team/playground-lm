@@ -18,9 +18,11 @@ Usage:
 
 Output: fineweb-train-00000.jsonl, fineweb-train-00001.jsonl, ...
 (50k docs per shard), fineweb-val.jsonl, fineweb-stats.json.
-Resumable: rerunning with the same --out skips docs already written
-(tracked in fineweb-manifest.json), so an interrupted stream can
-continue instead of restarting.
+Resumable: rerunning with the same --out skips stream rows already
+consumed (tracked in fineweb-manifest.json, checkpointed every 10k kept
+docs and at the end), truncates any lines written after the last
+checkpoint, and continues in the same shard. Exact-dedupe state is
+per-run (FineWeb-Edu is deduped upstream, so cross-session dupes are rare).
 
 
 Shutdown note: streaming datasets keep native IO threads (pyarrow /
@@ -51,6 +53,36 @@ SHARD_DOCS = 50_000
 MIN_CHARS = 500  # drop stubs/fragments; FineWeb-Edu docs are articles
 
 
+MANIFEST_DEFAULTS = {
+    "docs_seen": 0,          # stream rows consumed (kept + val + rejected)
+    "tokens_written": 0,     # approx tokens written (chars / 4)
+    "shard_idx": 0,          # current train shard being appended to
+    "shard_docs": 0,         # docs already in that shard
+    "train_shard_bytes": 0,  # byte size of that shard at the checkpoint
+    "val_bytes": 0,          # byte size of fineweb-val.jsonl at the checkpoint
+}
+
+
+def load_manifest(path: Path) -> dict:
+    manifest = dict(MANIFEST_DEFAULTS)
+    if path.exists():
+        manifest.update(json.loads(path.read_text()))
+    return manifest
+
+
+def write_manifest(path: Path, manifest: dict) -> None:
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(manifest, indent=2))
+    tmp.replace(path)  # atomic: a crash never leaves half a manifest
+
+
+def truncate_to(path: Path, size: int) -> None:
+    """Cut `path` back to `size` bytes (lines written after the checkpoint)."""
+    if path.exists() and path.stat().st_size > size:
+        with path.open("r+b") as f:
+            f.truncate(size)
+
+
 
 
 def main() -> None:
@@ -71,36 +103,48 @@ def main() -> None:
 
     args.out.mkdir(parents=True, exist_ok=True)
     manifest_path = args.out / "fineweb-manifest.json"
-    manifest = (
-        json.loads(manifest_path.read_text())
-        if manifest_path.exists()
-        else {"docs_seen": 0, "tokens_written": 0}
-    )
-
+    manifest = load_manifest(manifest_path)
+    # Crash recovery: drop any lines written after the last checkpoint so
+    # a resumed run never duplicates them (the stream re-yields those docs).
+    truncate_to(args.out / f"fineweb-train-{manifest['shard_idx']:05d}.jsonl",
+                manifest["train_shard_bytes"])
+    truncate_to(args.out / "fineweb-val.jsonl", manifest["val_bytes"])
 
     ds = load_dataset(
         "HuggingFaceFW/fineweb-edu", name=args.config, split="train", streaming=True
     )
     stream = iter(ds)
 
-
     deduper = Deduper(near=False)
     tokens = manifest["tokens_written"]
-    seen = 0
+    seen = 0  # stream rows consumed, including ones skipped on resume
     kept_train = kept_val = rejected = 0
-    shard_idx = manifest["docs_seen"] // SHARD_DOCS
-    shard_docs = manifest["docs_seen"] % SHARD_DOCS
+    shard_idx = manifest["shard_idx"]
+    shard_docs = manifest["shard_docs"]
     train_f = (args.out / f"fineweb-train-{shard_idx:05d}.jsonl").open("a", encoding="utf-8")
     val_f = (args.out / "fineweb-val.jsonl").open("a", encoding="utf-8")
 
+    def checkpoint() -> None:
+        train_f.flush()
+        val_f.flush()
+        manifest.update(
+            docs_seen=seen,
+            tokens_written=tokens,
+            shard_idx=shard_idx,
+            shard_docs=shard_docs,
+            train_shard_bytes=train_f.tell(),
+            val_bytes=val_f.tell(),
+        )
+        write_manifest(manifest_path, manifest)
 
     try:
         for row in stream:
-            seen += 1
-            if seen <= manifest["docs_seen"]:
-                continue  # resume: skip what a previous run already wrote
+            if seen < manifest["docs_seen"]:
+                seen += 1
+                continue  # resume: skip what a previous run already consumed
             if tokens >= args.target_tokens:
                 break
+            seen += 1
             text = clean_text(row.get("text", ""), min_chars=MIN_CHARS)
             if text is None or not deduper.is_new(text):
                 rejected += 1
@@ -124,11 +168,8 @@ def main() -> None:
             tokens += approx_tokens(text)
             if (kept_train + kept_val) % 10_000 == 0:
                 print(f"kept {kept_train + kept_val:,} docs, ~{tokens:,} tokens", flush=True)
-                manifest.update(
-                    docs_seen=manifest["docs_seen"] + kept_train + kept_val + rejected,
-                    tokens_written=tokens,
-                )
-                manifest_path.write_text(json.dumps(manifest, indent=2))
+                checkpoint()
+        checkpoint()  # final state, so a rerun after completion is a no-op
     finally:
         train_f.close()
         val_f.close()
@@ -139,7 +180,6 @@ def main() -> None:
             close()
         del stream, ds
         gc.collect()
-
 
     stats = {
         "source": "fineweb-edu",
