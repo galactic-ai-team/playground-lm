@@ -19,6 +19,12 @@ export = [
     "torch>=2.2",
     "safetensors>=0.4",
 ]
+onnx = [
+    "torch>=2.2",
+    "numpy>=1.26",
+    "onnx>=1.16",
+    "onnxruntime>=1.19",
+]
 
 benchmarks = [
     "torch>=2.2",
