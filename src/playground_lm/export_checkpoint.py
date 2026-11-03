@@ -1,14 +1,13 @@
-"""Export PlaygroundLM checkpoints to portable safetensors.
+"""Export PlaygroundLM weights to a portable safetensors bundle.
 
-Usage:
+Accepts:
+- combined PyTorch .pt checkpoint
+- Dee's split .safetensors checkpoint
+
+Example:
     python -m playground_lm.export_checkpoint \
-        checkpoints/step_10000.pt exports/step_10000
-
-Optional:
-    --config-json configs/model.json
-
-This is a weights-only export, NOT a resumable training checkpoint.
-Requires torch and safetensors (free, open-source packages).
+        checkpoints/step_00000003.safetensors \
+        exports/step_00000003
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import torch
-from safetensors.torch import save_file
+from safetensors.torch import load_file, save_file
 
 from .tokenizer import (
     CONTEXT_LENGTH,
@@ -28,22 +27,32 @@ from .tokenizer import (
     VOCAB_SIZE,
 )
 
-MODEL_KEYS = ("model", "model_state_dict", "state_dict")
+MODEL_KEYS = (
+    "model",
+    "model_state_dict",
+    "state_dict",
+)
 
 
-def unwrap_state_dict(checkpoint: Any) -> Mapping[str, Any]:
-    """Accept a bare state dict or common trainer checkpoint shapes."""
+def unwrap_state_dict(
+    checkpoint: Any,
+) -> Mapping[str, Any]:
     if not isinstance(checkpoint, Mapping):
-        raise TypeError("Checkpoint must be a mapping")
+        raise TypeError(
+            "Checkpoint must be a mapping"
+        )
 
     for key in MODEL_KEYS:
         candidate = checkpoint.get(key)
-        if isinstance(candidate, Mapping):
-            if candidate and all(
+        if (
+            isinstance(candidate, Mapping)
+            and candidate
+            and all(
                 isinstance(value, torch.Tensor)
                 for value in candidate.values()
-            ):
-                return candidate
+            )
+        ):
+            return candidate
 
     if checkpoint and all(
         isinstance(value, torch.Tensor)
@@ -52,36 +61,46 @@ def unwrap_state_dict(checkpoint: Any) -> Mapping[str, Any]:
         return checkpoint
 
     raise ValueError(
-        "No tensor state dict found under model, "
-        "model_state_dict, or state_dict"
+        "No tensor state dict found"
     )
 
 
 def prepare_tensors(
     state: Mapping[str, Any],
 ) -> dict[str, torch.Tensor]:
-    """Detach tensors onto CPU; materialize tied/shared storage safely."""
-    result: dict[str, torch.Tensor] = {}
+    result = {}
 
     for name, value in state.items():
         if not isinstance(name, str) or not name:
-            raise ValueError("State-dict keys must be nonempty strings")
+            raise ValueError(
+                "State keys must be nonempty strings"
+            )
         if not isinstance(value, torch.Tensor):
-            raise TypeError(f"{name} is not a tensor")
+            raise TypeError(
+                f"{name} is not a tensor"
+            )
 
-        # Clone avoids safetensors shared-storage restrictions.
-        result[name] = value.detach().to("cpu").contiguous().clone()
+        result[name] = (
+            value.detach()
+            .to("cpu")
+            .contiguous()
+            .clone()
+        )
 
     if not result:
-        raise ValueError("Cannot export an empty model")
-
+        raise ValueError(
+            "Cannot export an empty model"
+        )
     return result
 
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+        for chunk in iter(
+            lambda: source.read(1024 * 1024),
+            b"",
+        ):
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -92,45 +111,68 @@ def export_checkpoint(
     *,
     model_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Export weights and a JSON manifest.
-
-    source: trusted, locally produced PyTorch checkpoint.
-    destination: output directory.
-    """
     source = Path(source)
     destination = Path(destination)
 
     if not source.is_file():
         raise FileNotFoundError(source)
 
-    # weights_only=True prevents arbitrary pickle-object loading.
-    checkpoint = torch.load(
-        source,
-        map_location="cpu",
-        weights_only=True,
-    )
+    if source.suffix == ".safetensors":
+        checkpoint = None
+        state = prepare_tensors(
+            load_file(str(source), device="cpu")
+        )
+        # Obtain architecture config from the same discovery path
+        # used by the evaluator.
+        from evals.run_eval import split_checkpoint_config
 
-    state = prepare_tensors(unwrap_state_dict(checkpoint))
+        try:
+            config = split_checkpoint_config(source)
+        except FileNotFoundError:
+            if model_config is None:
+                raise
+            config = {}
 
-    config: dict[str, Any] = {}
-    if isinstance(checkpoint, Mapping):
-        raw_config = checkpoint.get("config", {})
-        if isinstance(raw_config, Mapping):
-            # Only include JSON-serializable config fields.
-            for key, value in raw_config.items():
-                if not isinstance(key, str):
-                    continue
-                try:
-                    json.dumps(value, allow_nan=False)
-                except (TypeError, ValueError):
-                    continue
-                config[key] = value
+    else:
+        checkpoint = torch.load(
+            source,
+            map_location="cpu",
+            weights_only=True,
+        )
+        state = prepare_tensors(
+            unwrap_state_dict(checkpoint)
+        )
+        config = {}
+
+        if isinstance(checkpoint, Mapping):
+            raw = checkpoint.get("config", {})
+            if isinstance(raw, Mapping):
+                if isinstance(
+                    raw.get("model"), Mapping
+                ):
+                    raw = raw["model"]
+                for key, value in raw.items():
+                    if not isinstance(key, str):
+                        continue
+                    try:
+                        json.dumps(
+                            value, allow_nan=False
+                        )
+                    except (
+                        TypeError, ValueError
+                    ):
+                        continue
+                    config[key] = value
 
     if model_config is not None:
         config.update(model_config)
 
-    destination.mkdir(parents=True, exist_ok=True)
-    weights_path = destination / "model.safetensors"
+    destination.mkdir(
+        parents=True, exist_ok=True
+    )
+    weights_path = (
+        destination / "model.safetensors"
+    )
 
     save_file(
         state,
@@ -142,8 +184,9 @@ def export_checkpoint(
         },
     )
 
-    tensor_parameters = sum(
-        tensor.numel() for tensor in state.values()
+    stored_elements = sum(
+        tensor.numel()
+        for tensor in state.values()
     )
 
     manifest: dict[str, Any] = {
@@ -152,9 +195,13 @@ def export_checkpoint(
         "training": "random_initialization",
         "artifact_type": "inference_weights",
         "weights": weights_path.name,
-        "weights_sha256": sha256_file(weights_path),
-        "source_checkpoint_sha256": sha256_file(source),
-        "stored_tensor_elements": tensor_parameters,
+        "weights_sha256": sha256_file(
+            weights_path
+        ),
+        "source_checkpoint_sha256": sha256_file(
+            source
+        ),
+        "stored_tensor_elements": stored_elements,
         "tensor_count": len(state),
         "tokenizer": {
             "encoding": "gpt2",
@@ -165,8 +212,7 @@ def export_checkpoint(
         "model_config": config,
     }
 
-    manifest_path = destination / "manifest.json"
-    manifest_path.write_text(
+    (destination / "manifest.json").write_text(
         json.dumps(
             manifest,
             indent=2,
@@ -180,24 +226,34 @@ def export_checkpoint(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Export PlaygroundLM weights to safetensors"
+        description=__doc__
     )
-    parser.add_argument("checkpoint", type=Path)
-    parser.add_argument("destination", type=Path)
     parser.add_argument(
-        "--config-json",
-        type=Path,
-        help="Optional JSON file with model architecture settings",
+        "checkpoint", type=Path
+    )
+    parser.add_argument(
+        "destination", type=Path
+    )
+    parser.add_argument(
+        "--config-json", type=Path
     )
     args = parser.parse_args()
 
     config = None
     if args.config_json:
         config = json.loads(
-            args.config_json.read_text(encoding="utf-8")
+            args.config_json.read_text(
+                encoding="utf-8"
+            )
         )
         if not isinstance(config, dict):
-            parser.error("--config-json must contain a JSON object")
+            parser.error(
+                "--config-json must contain an object"
+            )
+        if isinstance(
+            config.get("model"), dict
+        ):
+            config = config["model"]
 
     manifest = export_checkpoint(
         args.checkpoint,
@@ -206,8 +262,8 @@ def main() -> None:
     )
 
     print(
-        f"Exported {manifest['tensor_count']} tensors "
-        f"to {args.destination}"
+        f"Exported {manifest['tensor_count']} "
+        f"tensors to {args.destination}"
     )
 
 
