@@ -238,7 +238,8 @@ try:
         train_loader=train_loader,
         val_loader=val_loader,
         checkpoint_manager=ckpt,
-        config=TRAIN_CONFIG,
+        # loop.train needs context_len for tokens/step; it lives in MODEL_CONFIG.
+        config={**TRAIN_CONFIG, "context_len": MODEL_CONFIG["context_len"]},
         start_step=start_step,
         start_tokens_seen=start_tokens_seen,
         start_wall_time_s=start_wall_time_s,
