@@ -68,6 +68,7 @@ def main() -> None:
         DATA_DIR / "train.bin",
         context_len=CONFIG["context_len"],
         batch_size=CONFIG["batch_size"],
+        stride=1,
     )
     val_loader = build_dataloader(
         DATA_DIR / "val.bin",
