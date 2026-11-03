@@ -20,6 +20,13 @@ export = [
     "safetensors>=0.4",
 ]
 
+benchmarks = [
+    "torch>=2.2",
+    "numpy>=1.26",
+    "datasets>=3,<5",
+    "transformers>=4.45,<5",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
