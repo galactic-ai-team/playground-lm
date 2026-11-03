@@ -4,3 +4,6 @@ __pycache__/
 data/processed/
 data/smoke/
 out/
+
+# Stage C per-session push copies kernel-metadata-s<N>.json here (Dee, reply_0415)
+kaggle/stage_c_data/kernel-metadata.json
