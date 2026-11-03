@@ -1,23 +1,10 @@
+
 #!/usr/bin/env python3
-"""Export a trained causal LM to ONNX, with optional INT8 weights.
+"""Export PlaygroundLM to FP32 ONNX and optionally dynamic INT8.
 
-Uses the existing evals.run_eval.load_model() contract.
-
-Example:
-    python -m evals.export_onnx \
-      --checkpoint checkpoints/step_10000.pt \
-      --factory playground_lm.model:PlaygroundLM \
-      --output-dir exports/step_10000 \
-      --quantize
-
-Outputs:
-    model.onnx
-    model.int8.onnx             (when --quantize)
-    manifest.json
-
-FP32 numerical agreement and ONNX Runtime execution are verified
-before publication. Quantized inference is checked for finite outputs,
-but must receive additional browser and quality verification.
+Uses evals.run_eval.load_model() for checkpoint compatibility.
+Validates FP32 against PyTorch and checks quantized CPU execution.
+Browser compatibility and INT8 quality require separate testing.
 """
 
 from __future__ import annotations
@@ -25,7 +12,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
 from pathlib import Path
 from typing import Any
 
@@ -39,7 +25,7 @@ OPSET = 17
 
 
 class LogitsOnly(torch.nn.Module):
-    """Remove the training-only loss output from the exported graph."""
+    """Expose logits, omitting any training loss."""
 
     def __init__(self, model: torch.nn.Module):
         super().__init__()
@@ -47,7 +33,6 @@ class LogitsOnly(torch.nn.Module):
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         output = self.model(input_ids)
-
         if isinstance(output, torch.Tensor):
             return output
         if isinstance(output, (tuple, list)):
@@ -55,6 +40,45 @@ class LogitsOnly(torch.nn.Module):
         if hasattr(output, "logits"):
             return output.logits
         raise TypeError("Unsupported model output")
+
+
+def effective_vocab_size(
+    model: torch.nn.Module | None,
+    vocab_size: int | None = None,
+) -> int:
+    """Resolve vocabulary, checking it against model metadata."""
+    actual = getattr(model, "vocab_size", None)
+
+    if actual is not None:
+        if not isinstance(actual, int) or actual <= 0:
+            raise ValueError("Invalid model.vocab_size")
+        if vocab_size is not None and vocab_size != actual:
+            raise ValueError(
+                f"Vocabulary mismatch: model={actual}, "
+                f"requested={vocab_size}"
+            )
+
+    resolved = (
+        vocab_size if vocab_size is not None
+        else actual if actual is not None
+        else VOCAB_SIZE
+    )
+    if not isinstance(resolved, int) or resolved <= 0:
+        raise ValueError("vocab_size must be positive")
+
+    return resolved
+
+
+def valid_example_ids(
+    length: int,
+    vocab_size: int,
+) -> np.ndarray:
+    """Deterministic input IDs in [0, vocab_size)."""
+    if length <= 0 or vocab_size <= 0:
+        raise ValueError("Invalid input length or vocabulary")
+    return (
+        np.arange(length, dtype=np.int64) % vocab_size
+    ).reshape(1, length)
 
 
 def sha256_file(path: Path) -> str:
@@ -80,18 +104,24 @@ def export_fp32(
     path: Path,
     *,
     sample_length: int = 8,
+    vocab_size: int | None = None,
     opset: int = OPSET,
 ) -> None:
-    """Export batch/sequence-dynamic logits-only graph."""
+    """Export logits with dynamic batch and sequence axes."""
     if sample_length < 2:
         raise ValueError("sample_length must be >= 2")
 
+    vocab = effective_vocab_size(model, vocab_size)
+    context_len = getattr(model, "context_len", None)
+    if context_len is not None and sample_length > context_len:
+        raise ValueError("sample_length exceeds model context_len")
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
     wrapper = LogitsOnly(model.cpu().eval())
-    example = torch.randint(
-        low=0,
-        high=min(100, VOCAB_SIZE),
-        size=(1, sample_length),
-        dtype=torch.long,
+    example = torch.from_numpy(
+        valid_example_ids(sample_length, vocab).copy()
     )
 
     with torch.inference_mode():
@@ -123,16 +153,16 @@ def check_onnx(
     model: torch.nn.Module | None = None,
     *,
     lengths: tuple[int, ...] = (1, 8),
-    vocab_size: int = VOCAB_SIZE,
+    vocab_size: int | None = None,
     atol: float = 1e-3,
     rtol: float = 1e-3,
 ) -> dict[str, Any]:
-    """Check graph and inference on multiple sequence lengths.
-
-    When model is supplied, compare FP32 ONNX logits with PyTorch.
-    """
+    """Validate ONNX inference and optional PyTorch parity."""
     import onnx
     import onnxruntime as ort
+
+    vocab = effective_vocab_size(model, vocab_size)
+    path = Path(path)
 
     graph = onnx.load(str(path), load_external_data=True)
     onnx.checker.check_model(graph)
@@ -154,35 +184,39 @@ def check_onnx(
         raise ValueError("Unexpected ONNX input/output contract")
 
     max_abs_error = 0.0
-    lengths_checked = []
+    lengths_checked: list[int] = []
+
+    if model is not None:
+        model.cpu().eval()
 
     for length in lengths:
         if length <= 0:
             raise ValueError("Sequence lengths must be positive")
 
-        # Deterministic, in-vocabulary input IDs.
-        ids = (
-            np.arange(length, dtype=np.int64) % 100
-        ).reshape(1, length)
+        if model is not None:
+            model_context = getattr(model, "context_len", None)
+            if model_context is not None and length > model_context:
+                raise ValueError("Test length exceeds model context")
+
+        ids = valid_example_ids(length, vocab)
 
         actual = session.run(
             ["logits"],
             {"input_ids": ids},
         )[0]
 
-        if actual.shape != (1, length, vocab_size):
+        if actual.shape != (1, length, vocab):
             raise ValueError(
                 f"Incorrect logits shape: {actual.shape}"
             )
-
         if not np.isfinite(actual).all():
             raise ValueError("ONNX produced nonfinite logits")
 
         if model is not None:
             with torch.inference_mode():
                 expected = get_logits(
-                    model.cpu().eval(),
-                    torch.from_numpy(ids),
+                    model,
+                    torch.from_numpy(ids.copy()),
                 ).detach().float().numpy()
 
             error = float(
@@ -215,7 +249,7 @@ def quantize_model(
     source: Path,
     destination: Path,
 ) -> None:
-    """Apply dynamic, weight-oriented INT8 quantization."""
+    """Apply dynamic QInt8 quantization to linear operators."""
     from onnxruntime.quantization import (
         QuantType,
         quantize_dynamic,
@@ -236,17 +270,23 @@ def export_bundle(
     *,
     checkpoint: str | Path | None = None,
     context_len: int = 1024,
-    vocab_size: int = VOCAB_SIZE,
+    vocab_size: int | None = None,
     sample_length: int = 8,
     quantize: bool = True,
 ) -> dict[str, Any]:
-    """Export, validate, then publish the bundle manifest."""
+    """Export, test and write the artifact manifest."""
+    vocab = effective_vocab_size(model, vocab_size)
+
     if context_len <= 0:
         raise ValueError("context_len must be positive")
     if not 2 <= sample_length <= context_len:
         raise ValueError("Invalid sample_length")
-    if vocab_size <= 0:
-        raise ValueError("vocab_size must be positive")
+
+    model_context = getattr(model, "context_len", None)
+    if model_context is not None and context_len > model_context:
+        raise ValueError(
+            "Export context_len exceeds model context_len"
+        )
 
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
@@ -255,25 +295,28 @@ def export_bundle(
     int8_path = destination / "model.int8.onnx"
     manifest_path = destination / "manifest.json"
 
-    # Avoid leaving a stale manifest when re-exporting fails.
     manifest_path.unlink(missing_ok=True)
+    if not quantize:
+        int8_path.unlink(missing_ok=True)
 
     export_fp32(
         model,
         fp32_path,
         sample_length=sample_length,
+        vocab_size=vocab,
     )
 
+    lengths = tuple(
+        dict.fromkeys((1, sample_length))
+    )
     fp32_check = check_onnx(
         fp32_path,
         model,
-        lengths=tuple(dict.fromkeys(
-            (1, sample_length)
-        )),
-        vocab_size=vocab_size,
+        lengths=lengths,
+        vocab_size=vocab,
     )
 
-    artifacts = {
+    artifacts: dict[str, dict[str, Any]] = {
         "fp32": {
             **artifact_info(fp32_path),
             "validation": fp32_check,
@@ -285,10 +328,8 @@ def export_bundle(
 
         int8_check = check_onnx(
             int8_path,
-            lengths=tuple(dict.fromkeys(
-                (1, sample_length)
-            )),
-            vocab_size=vocab_size,
+            lengths=lengths,
+            vocab_size=vocab,
         )
 
         artifacts["int8"] = {
@@ -305,7 +346,7 @@ def export_bundle(
         "artifact_type": "onnx_inference",
         "tokenizer": {
             "name": "gpt2",
-            "vocab_size": vocab_size,
+            "vocab_size": vocab,
             "eot_token_id": EOT_ID,
         },
         "runtime": {
@@ -341,22 +382,14 @@ def export_bundle(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description=__doc__,
-    )
-    parser.add_argument(
-        "--checkpoint",
-        required=True,
-    )
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--checkpoint", required=True)
     parser.add_argument(
         "--factory",
         default="playground_lm.model:PlaygroundLM",
     )
     parser.add_argument("--config")
-    parser.add_argument(
-        "--output-dir",
-        required=True,
-    )
+    parser.add_argument("--output-dir", required=True)
     parser.add_argument(
         "--context-len",
         type=int,
@@ -370,7 +403,7 @@ def main() -> None:
     parser.add_argument(
         "--quantize",
         action="store_true",
-        help="Also emit dynamically quantized INT8 ONNX",
+        help="Also export dynamic INT8 ONNX",
     )
     args = parser.parse_args()
 
