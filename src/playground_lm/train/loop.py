@@ -21,14 +21,16 @@ def _learning_rate(step, peak, warmup, total):
 
 
 def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
-          config, start_step=0, max_steps=200_000, device="cpu", on_save=None):
+          config, start_step=0, max_steps=200_000, device="cpu", on_save=None,
+          start_tokens_seen: int = 0, start_wall_time_s: float = 0.0):
     """Train from completed update start_step through max_steps (inclusive).
 
     Append one metrics record per update, with val_loss every 500 updates.
-    Throughput excludes validation, logging and saving. wall_time_s and the
-    one-based callback save_count cover this invocation only. Token counts
-    include pre-resume steps and assume full batches of the configured size.
-    FP16 overflows retry the same update number with fresh micro-batches.
+    Throughput excludes validation, logging and saving. wall_time_s starts at
+    start_wall_time_s; the one-based callback save_count covers this invocation
+    only. Token counts start at start_tokens_seen and assume full batches of
+    the configured size. FP16 overflows retry the same update number with
+    fresh micro-batches.
     """
     if not 0 <= start_step <= max_steps:
         raise ValueError("require 0 <= start_step <= max_steps")
@@ -65,6 +67,7 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
             torch.cuda.synchronize(device)
 
     step, save_count, last_saved_step = start_step, 0, None
+    tokens_seen = start_tokens_seen
     started = time.perf_counter()
     run_dir = Path(checkpoint_manager.run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -76,7 +79,7 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
         synchronize()
         checkpoint_manager.save(
             getattr(model, "_orig_mod", model), optimizer, step,
-            step * tokens_per_step, time.perf_counter() - started,
+            tokens_seen, start_wall_time_s + (time.perf_counter() - started),
         )
         last_saved_step = step
         save_count += 1
@@ -117,10 +120,12 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
                         logger.warning("FP16 overflow; retrying update %d", step + 1)
                         continue
                 step += 1
+                tokens_seen += tokens_per_step
                 synchronize()
                 elapsed = time.perf_counter() - update_started
                 record = dict(step=step, loss=loss_sum.item() / accum,
-                              lr=lr, tokens_per_sec=tokens_per_step / elapsed)
+                              lr=lr, tokens_per_sec=tokens_per_step / elapsed,
+                              tokens_seen=tokens_seen)
                 if step % 500 == 0:
                     model.eval()
                     try:
@@ -134,6 +139,9 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
                         record["val_loss"] = val_sum.item() / 20
                     finally:
                         model.train()
+                record["wall_time_s"] = (
+                    start_wall_time_s + (time.perf_counter() - started)
+                )
                 metrics.write(json.dumps(record) + "\n")
                 metrics.flush()
                 logger.info("%s", json.dumps(record))

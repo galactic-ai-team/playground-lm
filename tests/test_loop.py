@@ -97,6 +97,8 @@ def test_warmup_cosine_accumulation_and_metrics(setup_run):
     assert [row["step"] for row in rows] == list(range(1, 7))
     assert rows[0]["loss"] == pytest.approx(0.25)
     assert all(row["tokens_per_sec"] > 0 for row in rows)
+    assert [row["tokens_seen"] for row in rows] == [18, 36, 54, 72, 90, 108]
+    assert all(row["wall_time_s"] >= 0 for row in rows)
     assert run["val_loader"].count == 0
 
 
@@ -133,7 +135,61 @@ def test_resume_and_append(setup_run):
     assert [row["step"] for row in read_metrics(run)] == [3, 4, 5, 6]
     assert run["optimizer"].updates[0][1] == pytest.approx([0.0055] * 2)
     assert run["train_loader"].count == 9
-    assert run["checkpoint_manager"].saved[-1][3] == 108
+    assert run["checkpoint_manager"].saved[-1][3] == 54
+
+
+def test_resume_counters_in_saves_and_metrics(setup_run, monkeypatch):
+    run = setup_run
+    ckpt = run["checkpoint_manager"]
+    ckpt.due = (11,)
+    clock = iter(float(value) for value in range(20))
+    monkeypatch.setattr("playground_lm.train.loop.time.perf_counter",
+                        lambda: next(clock))
+
+    train(**{**run, "start_step": 10, "max_steps": 12},
+          start_tokens_seen=12345, start_wall_time_s=100.0)
+
+    assert [saved[2] for saved in ckpt.saved] == [11, 12]
+    assert [saved[3] for saved in ckpt.saved] == [12363, 12381]
+    assert [saved[4] for saved in ckpt.saved] == [104.0, 108.0]
+    rows = read_metrics(run)
+    assert [row["step"] for row in rows] == [11, 12]
+    assert [row["tokens_seen"] for row in rows] == [12363, 12381]
+    assert [row["wall_time_s"] for row in rows] == [103.0, 107.0]
+    assert [row["tokens_per_sec"] for row in rows] == [18.0, 18.0]
+
+
+@pytest.mark.parametrize("interrupt_at, completed", [(1, 0), (4, 1)])
+def test_resume_interrupt_preserves_counters(setup_run, interrupt_at, completed):
+    run = setup_run
+    run["train_loader"].interrupt_at = interrupt_at
+
+    with pytest.raises(KeyboardInterrupt):
+        train(**{**run, "start_step": 10, "max_steps": 12},
+              start_tokens_seen=12345, start_wall_time_s=100.0)
+
+    saved = run["checkpoint_manager"].saved[-1]
+    assert saved[2] == 10 + completed
+    assert saved[3] == 12345 + completed * 18
+    assert saved[4] >= 100.0
+    rows = read_metrics(run)
+    assert len(rows) == completed
+    if completed:
+        assert rows[-1]["tokens_seen"] == saved[3]
+        assert 100.0 <= rows[-1]["wall_time_s"] <= saved[4]
+
+
+def test_resume_already_complete_preserves_counters(setup_run):
+    run = setup_run
+    train(**{**run, "start_step": 10, "max_steps": 10},
+          start_tokens_seen=12345, start_wall_time_s=100.0)
+
+    assert run["train_loader"].count == 0
+    assert read_metrics(run) == []
+    saved = run["checkpoint_manager"].saved[-1]
+    assert saved[2] == 10
+    assert saved[3] == 12345
+    assert saved[4] >= 100.0
 
 
 def test_validation_averages_20_batches_and_restores_train(setup_run):
