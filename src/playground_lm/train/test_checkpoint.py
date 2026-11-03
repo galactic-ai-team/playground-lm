@@ -232,8 +232,9 @@ def test_should_save_by_interval(run_dir, monkeypatch):
 
     # First call always saves (initial save bootstrap).
     assert ckpt.should_save(step=0) is True
-    # Simulate a save so _last_save_time advances.
-    ckpt._last_save_time = fake_time[0]
+
+    # Mark "just saved" without writing files — the public bootstrap() API.
+    ckpt.bootstrap()
 
     # 30s later: below interval, not a milestone → False.
     fake_time[0] = 1030.0
@@ -246,6 +247,7 @@ def test_should_save_by_interval(run_dir, monkeypatch):
     # Milestone step always saves regardless of time.
     fake_time[0] = 1060.5  # still below next interval
     assert ckpt.should_save(step=10) is True
+
 
 
 def test_resume_after_prune_uses_newest(run_dir):

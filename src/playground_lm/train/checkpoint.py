@@ -1,4 +1,4 @@
-# train/checkpoint.py
+# src/playground_lm/train/checkpoint.py
 # Resumable checkpoint management for PlaygroundLM.
 #
 # Responsibilities:
@@ -11,9 +11,8 @@
 #
 # Design notes:
 #   - Checkpoints are stored as two files: model weights (safetensors) and
-#     optimizer/training state (pickle, or torch.save). Separating them lets
-#     the export pipeline package weights for inference without pulling
-#     optimizer state.
+#     optimizer/training state (torch.save). Separating them lets the export
+#     pipeline package weights for inference without pulling optimizer state.
 #   - Manifest is written atomically (write to .tmp, then os.replace) so a
 #     killed process doesn't leave a half-written manifest.
 #   - All paths are relative to a single run directory so a Colab/Kaggle
@@ -21,7 +20,6 @@
 
 import json
 import os
-import shutil
 import time
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
@@ -30,32 +28,20 @@ from typing import Optional
 import torch
 
 
-# --- Config ---------------------------------------------------------------
-
-# Rolling checkpoints: keep this many recent ones. Older rolling checkpoints
-# are deleted. Milestones are always kept regardless of this limit.
 ROLLING_KEEP = 3
 
-# Milestone steps: these checkpoints are never deleted. Pick something that
-# maps to useful "scrub points" in the demo slider. 1024 steps at ~500 tok/s
-# effective throughput on a P100 is roughly 15 min, so these represent
-# progressively more-trained models without keeping everything.
 DEFAULT_MILESTONES = (1000, 5000, 10000, 25000, 50000, 100000, 200000)
 
-# Checkpoint interval in seconds. 30 min = 1800 s. Override via env var for
-# testing.
 DEFAULT_INTERVAL_S = int(os.environ.get("PLM_CKPT_INTERVAL_S", "1800"))
 
-
-# --- Manifest -------------------------------------------------------------
 
 @dataclass
 class CheckpointEntry:
     step: int
-    path: str                       # relative to run dir
+    path: str
     tokens_seen: int
     wall_time_s: float
-    created_at: float               # unix timestamp
+    created_at: float
     is_milestone: bool
 
 
@@ -68,8 +54,6 @@ class Manifest:
     latest_tokens_seen: int = 0
     latest_wall_time_s: float = 0.0
 
-
-# --- Manager --------------------------------------------------------------
 
 class CheckpointManager:
     def __init__(
@@ -98,12 +82,18 @@ class CheckpointManager:
 
     # --- public API -------------------------------------------------------
 
+    def bootstrap(self) -> None:
+        """Mark 'now' as the last-save time without writing a checkpoint.
+        Useful for tests and for callers that want to defer the first save
+        to a later interval."""
+        self._last_save_time = time.time()
+
     def should_save(self, step: int) -> bool:
         """True if a checkpoint is due by time interval or by milestone step."""
         if step in self.milestones:
             return True
         if self._last_save_time == 0.0:
-            return True  # always save once early
+            return True
         return (time.time() - self._last_save_time) >= self.interval_s
 
     def save(
@@ -114,26 +104,18 @@ class CheckpointManager:
         tokens_seen: int,
         wall_time_s: float,
     ) -> CheckpointEntry:
-        """Save a checkpoint. Returns the manifest entry. Rotates old rolling
-        checkpoints after saving."""
         stem = f"step_{step:08d}"
         weights_path = self.ckpt_dir / f"{stem}.safetensors"
         state_path = self.ckpt_dir / f"{stem}_state.pt"
 
-        # Weights: safetensors for inference/export.
         try:
             from safetensors.torch import save_file
-            # Convert bf16/fp16 state dict to fp16 for portability? No:
-            # safetensors handles whatever dtype the tensors are. Save as-is
-            # so the export pipeline can decide what to quantize.
             state_dict = {k: v.detach().cpu() for k, v in model.state_dict().items()}
             save_file(state_dict, str(weights_path))
         except ImportError:
-            # Fallback if safetensors unavailable in this env.
             torch.save(model.state_dict(), str(weights_path).replace(".safetensors", ".pt"))
             weights_path = Path(str(weights_path).replace(".safetensors", ".pt"))
 
-        # Training state: optimizer, step, rng — everything needed to resume.
         torch.save(
             {
                 "step": step,
@@ -170,14 +152,10 @@ class CheckpointManager:
     def resume(
         self, model: torch.nn.Module, optimizer: torch.optim.Optimizer
     ) -> Optional[dict]:
-        """Load the latest checkpoint into model + optimizer. Returns the state
-        dict (so caller can read step/tokens_seen/rng), or None if no
-        checkpoint exists."""
         if not self._manifest.checkpoints:
             return None
         latest = self._manifest.checkpoints[-1]
         weights_path = self.run_dir / latest.path
-        # Find matching state file: same stem, "_state.pt" suffix.
         stem = weights_path.stem.replace(".safetensors", "")
         if stem.endswith("_state"):
             stem = stem[: -len("_state")]
@@ -188,7 +166,6 @@ class CheckpointManager:
                 f"Manifest references missing files: {weights_path}, {state_path}"
             )
 
-        # Load weights.
         if str(weights_path).endswith(".safetensors"):
             from safetensors.torch import load_file
             state_dict = load_file(str(weights_path))
@@ -196,7 +173,6 @@ class CheckpointManager:
             state_dict = torch.load(str(weights_path), map_location="cpu")
         model.load_state_dict(state_dict)
 
-        # Load training state.
         state = torch.load(str(state_path), map_location="cpu")
         optimizer.load_state_dict(state["optimizer"])
         torch.set_rng_state(state["torch_rng_state"])
@@ -205,14 +181,11 @@ class CheckpointManager:
         return state
 
     def list_checkpoints(self) -> list[CheckpointEntry]:
-        """Sorted by step ascending."""
         return list(self._manifest.checkpoints)
 
     # --- internals --------------------------------------------------------
 
     def _rotate(self) -> None:
-        """Delete rolling checkpoints beyond the rolling_keep limit, keeping
-        milestones and the latest checkpoint always."""
         rolling = [
             e for e in self._manifest.checkpoints if not e.is_milestone
         ]
