@@ -1,8 +1,10 @@
 # src/playground_lm/train/test_data.py
-# Tests for the dataloader. Uses a synthetic token file: a known
-# arithmetic-like sequence so we can assert x/y alignment exactly.
+# Tests for the dataloader.
+#
+# Two distinct semantics under test:
+#   - stride=1 (train): every token position is a start; adjacent windows overlap.
+#   - stride=context_len (eval): non-overlapping; each token in exactly one batch.
 
-import os
 import tempfile
 from pathlib import Path
 
@@ -14,7 +16,6 @@ from playground_lm.train.data import build_dataloader
 
 
 def _write_tokens(path: Path, token_ids: list[int]) -> None:
-    """Write a list of ints as a uint16 binary file."""
     arr = np.array(token_ids, dtype=np.uint16)
     arr.tofile(path)
 
@@ -27,7 +28,7 @@ def test_raises_on_missing_file():
 def test_raises_on_odd_byte_length():
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "bad.bin"
-        p.write_bytes(b"\x01\x02\x03")  # 3 bytes — not a uint16 array
+        p.write_bytes(b"\x01\x02\x03")
         with pytest.raises(ValueError, match="multiple of 2"):
             build_dataloader(p, context_len=4, batch_size=2)
 
@@ -35,7 +36,7 @@ def test_raises_on_odd_byte_length():
 def test_raises_on_too_few_tokens():
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "short.bin"
-        _write_tokens(p, [1, 2, 3])  # 3 tokens, context_len=4 needs 5
+        _write_tokens(p, [1, 2, 3])
         with pytest.raises(ValueError, match="need at least"):
             build_dataloader(p, context_len=4, batch_size=2)
 
@@ -48,12 +49,23 @@ def test_raises_on_bad_context_len():
             build_dataloader(p, context_len=0, batch_size=2)
 
 
-def test_x_y_alignment():
-    """y is x shifted left by one token — this is the fundamental invariant."""
+def test_raises_on_bad_stride():
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "tokens.bin"
+        _write_tokens(p, list(range(100)))
+        with pytest.raises(ValueError, match="stride must be positive"):
+            build_dataloader(p, context_len=4, batch_size=2, stride=0)
+
+
+def test_x_y_alignment_stride_1():
+    """Train mode (stride=1): starts advance by 1, windows overlap.
+    y is x shifted left by 1 token — the fundamental invariant."""
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "seq.bin"
         _write_tokens(p, list(range(20)))
-        loader = build_dataloader(p, context_len=4, batch_size=2, shuffle=False)
+        loader = build_dataloader(
+            p, context_len=4, batch_size=2, shuffle=False, stride=1,
+        )
 
         x, y = next(loader)
         assert x.dtype == torch.int64
@@ -61,10 +73,22 @@ def test_x_y_alignment():
         assert x.shape == (2, 4)
         assert y.shape == (2, 4)
 
-        # y should equal x shifted left by 1, for every position.
-        # For sequential (shuffle=False) starting at 0:
-        #   x[0] = [0,1,2,3], y[0] = [1,2,3,4]
-        #   x[1] = [4,5,6,7], y[1] = [5,6,7,8]
+        # stride=1 sequential: x[0] = [0,1,2,3], x[1] = [1,2,3,4].
+        assert x[0].tolist() == [0, 1, 2, 3]
+        assert y[0].tolist() == [1, 2, 3, 4]
+        assert x[1].tolist() == [1, 2, 3, 4]
+        assert y[1].tolist() == [2, 3, 4, 5]
+
+
+def test_x_y_alignment_stride_context_len():
+    """Eval mode (stride=context_len, the default): non-overlapping windows."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "seq.bin"
+        _write_tokens(p, list(range(20)))
+        loader = build_dataloader(p, context_len=4, batch_size=2, shuffle=False)
+
+        x, y = next(loader)
+        # stride=4 sequential: x[0] = [0,1,2,3], x[1] = [4,5,6,7].
         assert x[0].tolist() == [0, 1, 2, 3]
         assert y[0].tolist() == [1, 2, 3, 4]
         assert x[1].tolist() == [4, 5, 6, 7]
@@ -72,24 +96,20 @@ def test_x_y_alignment():
 
 
 def test_shuffle_produces_different_order():
-    """Same seed -> same order; different seeds -> (probabilistically) different."""
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "seq.bin"
         _write_tokens(p, list(range(1000)))
 
-        a = next(build_dataloader(p, 8, 4, shuffle=True, seed=1))
-        b = next(build_dataloader(p, 8, 4, shuffle=True, seed=1))
-        c = next(build_dataloader(p, 8, 4, shuffle=True, seed=2))
+        a = next(build_dataloader(p, 8, 4, shuffle=True, stride=1, seed=1))
+        b = next(build_dataloader(p, 8, 4, shuffle=True, stride=1, seed=1))
+        c = next(build_dataloader(p, 8, 4, shuffle=True, stride=1, seed=2))
 
-        assert torch.equal(a[0], b[0]), "same seed should reproduce same batch"
+        assert torch.equal(a[0], b[0])
         assert torch.equal(a[1], b[1])
-        # Different seeds should give different batches (probabilistic; chance
-        # of collision is negligible at 1000 tokens, batch 4, context 8).
-        assert not torch.equal(a[0], c[0]), "different seeds should differ"
+        assert not torch.equal(a[0], c[0])
 
 
 def test_shuffle_false_is_deterministic():
-    """No shuffle = sequential, same order every time."""
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "seq.bin"
         _write_tokens(p, list(range(50)))
@@ -101,32 +121,45 @@ def test_shuffle_false_is_deterministic():
 
 
 def test_infinite_iterator():
-    """Should be able to pull many batches without exhausting (wraps)."""
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "seq.bin"
-        _write_tokens(p, list(range(20)))  # 20 tokens, context 4, batch 2
-        loader = build_dataloader(p, 4, 2, shuffle=False)
+        _write_tokens(p, list(range(20)))
+        loader = build_dataloader(p, 4, 2, shuffle=False, stride=1)
 
-        # Should not raise or StopIteration, even after many more samples than
-        # the file could produce in one pass.
         for _ in range(20):
             x, y = next(loader)
             assert x.shape == (2, 4)
 
 
 def test_eval_loader_no_shuffle_uses_all_tokens():
-    """With shuffle=False and drop_last=False, sequential iteration should
-    visit every token as a start position over enough batches."""
+    """With stride=context_len, sequential iteration visits every token
+    exactly once over enough batches — no overlap, no gaps."""
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "seq.bin"
-        _write_tokens(p, list(range(16)))  # 16 tokens, context 4 -> 12 starts
-        loader = build_dataloader(p, 4, 4, shuffle=False, drop_last=False)
+        _write_tokens(p, list(range(16)))  # 16 tokens, ctx 4 -> starts 0,4,8,12
+        loader = build_dataloader(
+            p, context_len=4, batch_size=4, shuffle=False, drop_last=False,
+        )
+
+        x, _ = next(loader)
+        # Should have exactly the 4 non-overlapping starts.
+        starts = x[:, 0].tolist()
+        assert starts == [0, 4, 8, 12]
+
+
+def test_train_loader_with_stride_1_covers_every_position():
+    """With stride=1, sequential reads should visit every valid start."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "seq.bin"
+        _write_tokens(p, list(range(16)))  # 16 tokens, ctx 4 -> starts 0..11
+        loader = build_dataloader(
+            p, context_len=4, batch_size=4, shuffle=False, stride=1,
+            drop_last=False,
+        )
 
         seen_starts = set()
-        # 12 valid starts, batch 4 -> 3 batches to cover them.
-        for _ in range(3):
+        for _ in range(3):  # 12 valid starts / batch 4 = 3 batches
             x, _ = next(loader)
             for row in x:
                 seen_starts.add(int(row[0].item()))
-        # Starts should be {0,1,2,...,11} — every valid start position.
         assert seen_starts == set(range(12))

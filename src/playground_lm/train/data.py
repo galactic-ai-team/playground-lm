@@ -10,17 +10,24 @@
 #   x: LongTensor [batch_size, context_len]
 #   y: LongTensor [batch_size, context_len]  (x shifted left by 1 token)
 #
-# Memory-mapped, so we can train on a corpus larger than RAM. On Kaggle with
-# 13GB RAM and a 1-2GB FineWeb sample, this matters less than on a laptop,
-# but it's the right pattern regardless.
+# Memory-mapped, so we can train on a corpus larger than RAM.
 #
-# Determinism: seedable shuffle via a passed-in generator. Eval loader uses
-# shuffle=False and sequential reads, so val loss is comparable across runs
-# and across checkpoints.
+# Stride semantics:
+#   - stride=1 (train): every token position is a valid start. Adjacent
+#     windows overlap by context_len-1 tokens. This is how LM pretraining
+#     works — every token becomes the target of *some* prediction. Use with
+#     shuffle=True.
+#   - stride=context_len (eval): non-overlapping windows. Each token
+#     contributes to exactly one eval batch, so val_loss is an unbiased
+#     estimate over the held-out file. Use with shuffle=False.
+#
+#   The caller picks the stride; the loader doesn't guess. Default is
+#   stride=context_len (safe eval default); training code should pass
+#   stride=1 explicitly.
 
 import os
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator
 
 import numpy as np
 import torch
@@ -31,6 +38,7 @@ def build_dataloader(
     context_len: int,
     batch_size: int,
     shuffle: bool = True,
+    stride: int | None = None,
     seed: int = 42,
     drop_last: bool = True,
 ) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
@@ -41,7 +49,10 @@ def build_dataloader(
         path:        Path to .bin file of uint16 token IDs.
         context_len: Sequence length per sample (e.g. 1024 for GPT-2 small).
         batch_size:  Batch size per yielded batch.
-        shuffle:     Randomize batch order (True for train, False for val).
+        shuffle:     Randomize start positions per batch (True for train).
+        stride:      Step between consecutive start positions in non-shuffled
+                     mode. None means context_len (non-overlapping, eval-safe).
+                     Pass 1 for training when shuffle=True.
         seed:        RNG seed for shuffle. Irrelevant when shuffle=False.
         drop_last:   Drop final incomplete batch (True for train to keep
                      gradient accumulation exact, False for eval to use all
@@ -49,12 +60,6 @@ def build_dataloader(
 
     Yields:
         (x, y) batch tuples, both LongTensor [batch_size, context_len].
-
-    Raises:
-        FileNotFoundError: if the token file doesn't exist.
-        ValueError: if the file has fewer than context_len+1 tokens, or its
-                    byte length is not divisible by 2 (uint16), or batch_size
-                    or context_len are non-positive.
     """
     path = Path(path)
     if not path.exists():
@@ -63,6 +68,10 @@ def build_dataloader(
         raise ValueError(f"context_len must be positive, got {context_len}")
     if batch_size <= 0:
         raise ValueError(f"batch_size must be positive, got {batch_size}")
+
+    effective_stride = stride if stride is not None else context_len
+    if effective_stride <= 0:
+        raise ValueError(f"stride must be positive, got {effective_stride}")
 
     file_size = path.stat().st_size
     if file_size % 2 != 0:
@@ -81,40 +90,50 @@ def build_dataloader(
     # np.memmap gives zero-copy reads from disk.
     tokens = np.memmap(path, dtype=np.uint16, mode="r")
 
+    # Valid start positions: a sample needs context_len+1 tokens.
+    #   start from s: x = tokens[s : s+context_len]
+    #                 y = tokens[s+1 : s+context_len+1]
+    # So s ranges over [0, num_tokens - context_len - 1].
+    max_start = num_tokens - context_len
+    # List of valid starts spaced by effective_stride.
+    all_starts = np.arange(0, max_start, effective_stride, dtype=np.int64)
+
     rng = np.random.default_rng(seed) if shuffle else None
 
     def generator() -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
-        while True:
-            # Number of valid start positions: need context_len+1 tokens per
-            # sample (context_len inputs + 1 target offset).
-            num_samples = num_tokens - context_len  # start positions 0..num_tokens-context_len-1
-            if num_samples <= 0:
-                return
-            if rng is not None:
-                starts = rng.integers(0, num_samples, size=batch_size)
-            else:
-                # Sequential: cycle through the file in order.
-                if not hasattr(generator, "_pos"):
-                    generator._pos = 0  # type: ignore[attr-defined]
-                starts = np.arange(
-                    generator._pos,  # type: ignore[attr-defined]
-                    min(generator._pos + batch_size, num_samples),  # type: ignore[attr-defined]
-                )
-                generator._pos = (generator._pos + batch_size) % num_samples  # type: ignore[attr-defined]
-                if len(starts) < batch_size:
-                    # Not enough samples left to fill a batch on this pass.
-                    if drop_last:
-                        # Wrap and take from the beginning.
-                        remaining = batch_size - len(starts)
-                        starts = np.concatenate([starts, np.arange(remaining)])
-                    else:
-                        yield _batch_from_starts(tokens, starts, context_len)
-                        return
+        pos = 0  # for sequential mode
 
-            if len(starts) < batch_size and drop_last:
+        while True:
+            if rng is not None:
+                # Random starts with replacement (train mode).
+                starts = rng.choice(all_starts, size=batch_size, replace=True)
+                yield _batch_from_starts(tokens, starts, context_len)
                 continue
-            if len(starts) == 0:
-                return
+
+            # Sequential mode: walk through all_starts in order.
+            remaining = len(all_starts) - pos
+            if remaining <= 0:
+                # Wrapped around: restart from 0 for the next pass.
+                pos = 0
+                remaining = len(all_starts)
+
+            if remaining < batch_size:
+                if drop_last:
+                    # Not enough to fill the batch — wrap and top up.
+                    tail = all_starts[pos:]
+                    head = all_starts[: batch_size - len(tail)]
+                    starts = np.concatenate([tail, head])
+                    pos = batch_size - len(tail)
+                else:
+                    # Yield the partial batch, then stop.
+                    starts = all_starts[pos:]
+                    pos = len(all_starts)
+                    if len(starts) > 0:
+                        yield _batch_from_starts(tokens, starts, context_len)
+                    return
+            else:
+                starts = all_starts[pos : pos + batch_size]
+                pos += batch_size
 
             yield _batch_from_starts(tokens, starts, context_len)
 
