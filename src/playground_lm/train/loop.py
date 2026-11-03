@@ -27,6 +27,17 @@ Review fixes (Claude):
     metrics, saves checkpoints and calls on_save. Checkpoints hold the plain
     model, so the format is unchanged. Single-GPU and CPU runs don't touch
     torch.distributed at all.
+  * Health metrics in every metrics.jsonl row:
+      grad_norm        total gradient norm before clipping (the value
+                       clip_grad_norm_ already computes); a rising trend or
+                       spikes usually come before a loss blow-up.
+      loss_scale       FP16 GradScaler scale after this update (FP16 runs only);
+                       a scale that keeps halving means frequent overflows.
+      overflow_retries FP16 overflows skipped before this update succeeded
+                       (only present when > 0).
+      peak_mem_gib     peak GPU memory allocated by this process since the
+                       session started, in GiB (CUDA only; per GPU under DDP,
+                       rank 0's value is logged).
 """
 
 import json
@@ -83,6 +94,14 @@ class _NullMetrics:
 
     def flush(self):
         pass
+
+
+def _peak_mem_gib(device):
+    """Peak memory allocated on a CUDA device since the process started (or
+    the last reset), in GiB; None on CPU."""
+    if device.type != "cuda":
+        return None
+    return torch.cuda.max_memory_allocated(device) / 2**30
 
 
 def _world():
@@ -219,7 +238,8 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
                             scaler.scale(micro_loss).backward()
                 if scaler is not None:
                     scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
+                # Total norm before clipping; identical on every rank under DDP.
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
                 if scaler is None:
                     optimizer.step()
                 else:
@@ -234,6 +254,7 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
                                 f"update {step + 1}; stopping (last checkpoint is intact)")
                         logger.warning("FP16 overflow; retrying update %d", step + 1)
                         continue
+                overflow_retries = consecutive_overflows
                 consecutive_overflows = 0
                 step += 1
                 tokens_seen += tokens_per_step
@@ -243,6 +264,14 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
                 record = dict(step=step, loss=loss_sum.item() / accum,
                               lr=lr, tokens_per_sec=tokens_per_step / elapsed,
                               tokens_seen=tokens_seen)
+                record["grad_norm"] = float(grad_norm)
+                if scaler is not None:
+                    record["loss_scale"] = float(scaler.get_scale())
+                if overflow_retries:
+                    record["overflow_retries"] = overflow_retries
+                peak_mem = _peak_mem_gib(device)  # not `peak`: that's the LR peak above
+                if peak_mem is not None:
+                    record["peak_mem_gib"] = round(peak_mem, 3)
                 if first_record:
                     record["amp_dtype"] = amp_name
                     first_record = False
