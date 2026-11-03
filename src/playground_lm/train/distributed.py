@@ -20,12 +20,19 @@ What each process does differently (the rest of the script is identical):
     different batches;
   * only rank 0 writes metrics, saves checkpoints and uploads releases.
 The training loop handles the last two; the notebook passes the seed.
+
+Timeout: while rank 0 saves a checkpoint (and, every few saves, uploads it
+as a GitHub release), the other GPU waits at the next gradient all-reduce.
+NCCL's default wait limit is 10 minutes, which a large upload can exceed,
+so setup() uses 60 minutes (PLM_DIST_TIMEOUT_MIN to change it).
 """
 
 from __future__ import annotations
 
 import os
+
 from dataclasses import dataclass
+from datetime import timedelta
 
 import torch
 import torch.distributed as dist
@@ -47,14 +54,16 @@ class DistInfo:
         return self.rank == 0
 
 
-def setup(backend: str | None = None) -> DistInfo:
+def setup(backend: str | None = None, timeout_min: float | None = None) -> DistInfo:
     """Join the process group torchrun set up; single process if there is none.
 
     Reads RANK, LOCAL_RANK and WORLD_SIZE (set by torchrun). Uses NCCL on GPUs
-    and gloo on CPU (tests).
+    and gloo on CPU (tests). timeout_min (default: PLM_DIST_TIMEOUT_MIN or 60)
+    is how long a rank waits for the others in any collective.
     """
     world = int(os.environ.get("WORLD_SIZE", "1"))
     if world <= 1:
+
         return DistInfo()
     rank = int(os.environ["RANK"])
     local_rank = int(os.environ.get("LOCAL_RANK", rank))
@@ -62,8 +71,10 @@ def setup(backend: str | None = None) -> DistInfo:
         backend = "nccl" if torch.cuda.is_available() else "gloo"
     if backend == "nccl":
         torch.cuda.set_device(local_rank)
+    if timeout_min is None:
+        timeout_min = float(os.environ.get("PLM_DIST_TIMEOUT_MIN", "60"))
     if not dist.is_initialized():
-        dist.init_process_group(backend=backend)
+        dist.init_process_group(backend=backend, timeout=timedelta(minutes=timeout_min))
     return DistInfo(rank=rank, local_rank=local_rank, world_size=world)
 
 
@@ -84,6 +95,7 @@ def wrap(model: torch.nn.Module, info: DistInfo) -> torch.nn.Module:
         return model
     ids = [info.local_rank] if torch.cuda.is_available() else None
     return DistributedDataParallel(model, device_ids=ids)
+
 
 
 def unwrap(model: torch.nn.Module) -> torch.nn.Module:
