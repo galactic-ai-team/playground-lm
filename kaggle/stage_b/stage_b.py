@@ -11,12 +11,18 @@
 #
 # Free-tools only: Kaggle T4 x2 or P100, no paid services.
 #
-# Assumes kernel_sources contains:
-#   - galacticaiteam/plm-stageb-data-prep  (train.bin, val.bin, stats under /kaggle/input)
-#   - galacticaiteam/plm-stageb-launch     (previous session's output, if resuming)
+# Two metadata files drive two phases:
+#   kernel-metadata.json         — first run, no self-reference (kernels can't
+#                                  self-reference before their first version)
+#   kernel-metadata-resume.json  — subsequent runs, includes self-reference so
+#                                  the previous session's output mounts as a source
 #
-# First run: remove the second kernel_source — there's nothing to resume from.
-# Subsequent runs: keep it; it's the previous version's output.
+# Both use id galacticaiteam/plm-stage-b-launch. The title "PLM Stage B Launch"
+# slugifies to that id.
+#
+# If GH_TOKEN isn't set as a Kaggle secret, checkpoints stay in the kernel's
+# /kaggle/working output (which is what the next session's kernel_sources mount
+# reads). The release upload is a convenience, not a requirement for resume.
 
 import os
 import shutil
@@ -31,19 +37,21 @@ INPUT = Path("/kaggle/input")
 RUNS_DIR = WORKING / "runs"
 REPO_DIR = WORKING / "playground-lm"
 
-# Data prep kernel mounts under /kaggle/input/<slug>/. Its output has
-# plm-data/ with train.bin, val.bin, tokenizer/, stats.
+# Data prep kernel mounts under /kaggle/input/plm-stageb-data-prep/. Its
+# output has plm-data/ with train.bin, val.bin, tokenizer/, stats.
 DATA_DIR = INPUT / "plm-stageb-data-prep" / "plm-data"
 
-# Previous session's output, if resuming. Same slug as this kernel.
-PREVIOUS_RUNS = INPUT / "plm-stageb-launch" / "runs"
+# Previous session's output, if resuming. Matches the self-reference slug in
+# kernel-metadata-resume.json. Missing on the first run; copy_previous_runs()
+# handles that gracefully.
+PREVIOUS_RUNS = INPUT / "plm-stage-b-launch" / "runs"
 
 # --- Config ---------------------------------------------------------------
 
 GIT_REPO = "https://github.com/galactic-ai-team/playground-lm.git"
 GIT_BRANCH = "main"
 
-# Stage B settings per Lumi's request.
+# Stage B settings.
 ENV_OVERRIDES = {
     "PLM_STAGE": "B",
     "PLM_BATCH_SIZE": "6",
@@ -71,22 +79,29 @@ def load_gh_token() -> str | None:
             log("GH_TOKEN loaded from Kaggle Secrets")
             return token
     except Exception as e:
-        log(f"Kaggle Secrets unavailable ({e}); checking env var")
+        log(f"Kaggle Secrets unavailable or secret not set ({e})")
     token = os.environ.get("GH_TOKEN")
     if token:
         log("GH_TOKEN loaded from env")
-    return token
+        return token
+    return None
 
 
 def copy_previous_runs() -> bool:
-    """Copy previous session's runs/ into RUNS_DIR. Returns True if resumed."""
+    """Copy previous session's runs/ into RUNS_DIR. Returns True if resumed.
+
+    On the first run there's no previous session, so PREVIOUS_RUNS doesn't
+    exist and this returns False. Every subsequent run finds the prior
+    session's output mounted at PREVIOUS_RUNS and copies it forward so the
+    notebook's CheckpointManager.resume() picks up the latest checkpoint.
+    """
     if not PREVIOUS_RUNS.exists():
         log(f"no previous runs at {PREVIOUS_RUNS}; starting fresh")
         return False
 
     # Sanity: manifest must exist for resume to mean anything.
     if not (PREVIOUS_RUNS / "manifest.json").exists():
-        log(f"previous runs dir exists but has no manifest.json; starting fresh")
+        log("previous runs dir exists but has no manifest.json; starting fresh")
         return False
 
     log(f"copying previous runs from {PREVIOUS_RUNS} → {RUNS_DIR}")
@@ -94,7 +109,8 @@ def copy_previous_runs() -> bool:
     if RUNS_DIR.exists():
         shutil.rmtree(RUNS_DIR)
     shutil.copytree(PREVIOUS_RUNS, RUNS_DIR)
-    log(f"copied {sum(1 for _ in RUNS_DIR.rglob('*') if _.is_file())} files")
+    n_files = sum(1 for _ in RUNS_DIR.rglob("*") if _.is_file())
+    log(f"copied {n_files} files from previous session")
     return True
 
 
@@ -129,6 +145,16 @@ def find_data_dir() -> Path:
     )
 
 
+def _count_gpus() -> int:
+    """Detect available GPUs. Falls back to 1 if detection fails."""
+    try:
+        import torch
+        n = torch.cuda.device_count()
+        return max(1, n)
+    except Exception:
+        return 1
+
+
 # --- Main -----------------------------------------------------------------
 
 def main() -> int:
@@ -139,18 +165,19 @@ def main() -> int:
     ENV_OVERRIDES["PLM_DATA_DIR"] = str(data_dir)
     log(f"data dir: {data_dir}")
 
-    # 2. Resume: copy previous session's runs.
+    # 2. Resume: copy previous session's runs if available.
     copy_previous_runs()
 
     # 3. Clone repo.
     clone_repo()
 
-    # 4. GH_TOKEN for checkpoint upload.
+    # 4. GH_TOKEN for checkpoint upload (optional).
     token = load_gh_token()
     if token:
         ENV_OVERRIDES["GH_TOKEN"] = token
     else:
-        log("WARN: no GH_TOKEN — checkpoints will not be uploaded to the release")
+        log("no GH_TOKEN — checkpoints will stay in /kaggle/working/runs "
+            "and be picked up by the next session's kernel_sources mount")
 
     # 5. Build env for torchrun subprocess.
     env = os.environ.copy()
@@ -174,16 +201,6 @@ def main() -> int:
     result = subprocess.run(cmd, env=env, cwd=str(REPO_DIR))
     log(f"torchrun exited with code {result.returncode}")
     return result.returncode
-
-
-def _count_gpus() -> int:
-    """Detect available GPUs. Falls back to 1 if detection fails."""
-    try:
-        import torch
-        n = torch.cuda.device_count()
-        return max(1, n)
-    except Exception:
-        return 1
 
 
 if __name__ == "__main__":

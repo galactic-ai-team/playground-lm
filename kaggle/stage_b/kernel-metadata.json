@@ -1,5 +1,5 @@
 {
-  "id": "galacticaiteam/plm-stageb-launch",
+  "id": "galacticaiteam/plm-stage-b-launch",
   "title": "PLM Stage B Launch",
   "code_file": "stage_b.py",
   "language": "python",
@@ -9,8 +9,7 @@
   "enable_internet": true,
   "dataset_sources": [],
   "kernel_sources": [
-    "galacticaiteam/plm-stageb-data-prep",
-    "galacticaiteam/plm-stageb-launch"
+    "galacticaiteam/plm-stageb-data-prep"
   ],
   "competition_sources": [],
   "model_sources": []
