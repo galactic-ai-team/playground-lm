@@ -1,0 +1,23 @@
+Metadata-Version: 2.4
+Name: playground-lm
+Version: 0.1.0
+Summary: From-scratch GPT-2-scale language model by the AI Playground team
+Requires-Python: >=3.10
+License-File: LICENSE
+Requires-Dist: tiktoken<1,>=0.7
+Provides-Extra: test
+Requires-Dist: pytest<10,>=8; extra == "test"
+Provides-Extra: export
+Requires-Dist: torch>=2.2; extra == "export"
+Requires-Dist: safetensors>=0.4; extra == "export"
+Provides-Extra: onnx
+Requires-Dist: torch>=2.2; extra == "onnx"
+Requires-Dist: numpy>=1.26; extra == "onnx"
+Requires-Dist: onnx>=1.16; extra == "onnx"
+Requires-Dist: onnxruntime>=1.19; extra == "onnx"
+Provides-Extra: benchmarks
+Requires-Dist: torch>=2.2; extra == "benchmarks"
+Requires-Dist: numpy>=1.26; extra == "benchmarks"
+Requires-Dist: datasets<5,>=3; extra == "benchmarks"
+Requires-Dist: transformers<5,>=4.45; extra == "benchmarks"
+Dynamic: license-file

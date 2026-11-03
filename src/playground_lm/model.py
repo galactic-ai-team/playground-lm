@@ -1,10 +1,53 @@
-"""A GPT-2 style decoder trained from scratch. Requires PyTorch 2.x."""
+"""A GPT-2 style decoder trained from scratch. Requires PyTorch 2.x.
+
+Reviewed against GPT-2 small (Claude): pre-LN blocks, tanh GELU, learned
+positions, biases, final LayerNorm, tied input/output embeddings, N(0, 0.02)
+init with residual projections scaled by 1/sqrt(2 * n_layers). The loss is
+computed in chunks so the T4 doesn't run out of memory (chunked_cross_entropy).
+"""
 
 import math
 
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
+
+# Rows of the (B*T, vocab) logits handled per loss chunk. Each chunk's FP32
+# softmax is ~2048 * 50257 * 4 bytes = 0.4 GB, recomputed in backward.
+LOSS_CHUNK_TOKENS = 2048
+
+
+def _cross_entropy_sum(logits, targets):
+    # FP32 softmax for this chunk only; works the same under autocast.
+    return F.cross_entropy(logits.float(), targets, reduction="sum")
+
+
+def chunked_cross_entropy(logits, targets, chunk_tokens=LOSS_CHUNK_TOKENS):
+    """Mean cross-entropy over all positions, computed in row chunks.
+
+    The plain `F.cross_entropy(logits.float(), ...)` materialises an FP32
+    copy of the full logits plus its FP32 log-softmax: at batch 12 x 1024 x
+    50257 that is ~2.5 GB each, on top of the FP16 logits, which is what
+    OOM'd the T4. Here each chunk's FP32 work is wrapped in activation
+    checkpointing, so autograd keeps only the (already existing) low-precision
+    logits and recomputes one chunk's softmax at a time in backward. Same
+    value and gradients as the plain loss; the recompute is a cheap,
+    memory-bound softmax, not the vocabulary matmul.
+    """
+    flat_logits = logits.reshape(-1, logits.size(-1))
+    flat_targets = targets.reshape(-1)
+    count = flat_targets.numel()
+    use_checkpoint = torch.is_grad_enabled() and flat_logits.requires_grad
+    total = flat_logits.new_zeros((), dtype=torch.float32)
+    for start in range(0, count, chunk_tokens):
+        rows = slice(start, start + chunk_tokens)
+        if use_checkpoint:
+            part = checkpoint(_cross_entropy_sum, flat_logits[rows], flat_targets[rows], use_reentrant=False)
+        else:
+            part = _cross_entropy_sum(flat_logits[rows], flat_targets[rows])
+        total = total + part
+    return total / count
 
 
 def _save_tied_weight(module, state_dict, prefix, local_metadata):
@@ -128,10 +171,9 @@ class PlaygroundLM(nn.Module):
         logits = self.lm_head(self.ln_f(hidden))
         loss = None
         if y is not None:
-            # Accumulate cross-entropy in FP32, including under autocast.
-            loss = F.cross_entropy(
-                logits.float().reshape(-1, self.vocab_size), y.reshape(-1)
-            )
+            # FP32 cross-entropy, chunked so it never holds a full FP32 copy
+            # of the B x T x vocab logits (see chunked_cross_entropy).
+            loss = chunked_cross_entropy(logits, y, LOSS_CHUNK_TOKENS)
         return logits, loss
 
     def num_params(self, non_embedding=True):
