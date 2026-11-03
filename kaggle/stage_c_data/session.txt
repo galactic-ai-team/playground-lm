@@ -1,2 +1,0 @@
-# kaggle/stage_c_data/session.txt
-0
