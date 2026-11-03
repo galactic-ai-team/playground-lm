@@ -7,6 +7,12 @@
 #
 # Valid starts are in [0, num_tokens - context_len - 1] inclusive, because each
 # sample needs context_len+1 tokens (context_len inputs + 1 target offset).
+#
+# Also tests resume behavior: seed_offset changes the shuffle order so a
+# resumed session does not replay the same windows.
+#
+# Test data note: token IDs written as uint16 must be < 65536 (GT-2 vocab is
+# 50257). Use `i % 50257` for large synthetic corpora.
 
 import tempfile
 from pathlib import Path
@@ -95,21 +101,67 @@ def test_x_y_alignment_stride_context_len():
         assert y[1].tolist() == [5, 6, 7, 8]
 
 
-def test_shuffle_produces_different_order():
+def test_shuffle_same_seed_reproduces():
+    """Same seed + same seed_offset → same batches."""
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "seq.bin"
         _write_tokens(p, list(range(1000)))
 
         a = next(build_dataloader(p, 8, 4, shuffle=True, stride=1, seed=1))
         b = next(build_dataloader(p, 8, 4, shuffle=True, stride=1, seed=1))
-        c = next(build_dataloader(p, 8, 4, shuffle=True, stride=1, seed=2))
-
         assert torch.equal(a[0], b[0])
         assert torch.equal(a[1], b[1])
+
+
+def test_shuffle_different_seeds_differ():
+    """Different seeds → different batches (probabilistically)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "seq.bin"
+        _write_tokens(p, list(range(1000)))
+
+        a = next(build_dataloader(p, 8, 4, shuffle=True, stride=1, seed=1))
+        c = next(build_dataloader(p, 8, 4, shuffle=True, stride=1, seed=2))
         assert not torch.equal(a[0], c[0])
 
 
-def test_shuffle_false_is_deterministic():
+def test_shuffle_seed_offset_changes_order():
+    """seed_offset changes the RNG stream — used for resume."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "seq.bin"
+        _write_tokens(p, list(range(1000)))
+
+        fresh = next(build_dataloader(p, 8, 4, shuffle=True, stride=1, seed=42, seed_offset=0))
+        resumed = next(build_dataloader(p, 8, 4, shuffle=True, stride=1, seed=42, seed_offset=500))
+        assert not torch.equal(fresh[0], resumed[0]), \
+            "resumed session should sample different windows"
+
+
+def test_shuffle_seed_offset_is_deterministic():
+    """Same seed_offset (e.g. same resume point) reproduces."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "seq.bin"
+        _write_tokens(p, list(range(1000)))
+
+        a = next(build_dataloader(p, 8, 4, shuffle=True, stride=1, seed=42, seed_offset=500))
+        b = next(build_dataloader(p, 8, 4, shuffle=True, stride=1, seed=42, seed_offset=500))
+        assert torch.equal(a[0], b[0])
+
+
+def test_shuffle_does_not_allocate_start_array():
+    """Shuffle mode exercises the no-precompute path on a moderately sized file.
+
+    Token IDs must stay within uint16 range (GPT-2 vocab 50257), so use i % 50257.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "seq.bin"
+        _write_tokens(p, [i % 50257 for i in range(100_000)])
+        loader = build_dataloader(p, context_len=4, batch_size=4, shuffle=True, stride=1)
+        x, y = next(loader)
+        assert x.shape == (4, 4)
+        assert y.shape == (4, 4)
+
+
+def test_sequential_deterministic():
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "seq.bin"
         _write_tokens(p, list(range(50)))
@@ -132,11 +184,7 @@ def test_infinite_iterator():
 
 
 def test_eval_loader_respects_token_boundary():
-    """With 16 tokens and context_len=4, valid starts are 0, 4, 8 � not 12.
-
-    Start 12 would need y = tokens[13..16], but index 16 doesn't exist. The
-    last valid start is num_tokens - context_len - 1 = 11, so the highest
-    stride-aligned start is 8."""
+    """With 16 tokens and context_len=4, valid starts are 0, 4, 8 — not 12."""
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "seq.bin"
         _write_tokens(p, list(range(16)))
@@ -150,8 +198,7 @@ def test_eval_loader_respects_token_boundary():
 
 
 def test_eval_loader_uses_last_valid_start_when_available():
-    """With 17 tokens and context_len=4, start 12 IS valid: y reaches
-    tokens[16], the last index. Non-overlapping starts are 0, 4, 8, 12."""
+    """With 17 tokens and context_len=4, start 12 IS valid."""
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "seq.bin"
         _write_tokens(p, list(range(17)))
@@ -162,7 +209,6 @@ def test_eval_loader_uses_last_valid_start_when_available():
         x, y = next(loader)
         starts = x[:, 0].tolist()
         assert starts == [0, 4, 8, 12]
-        # Confirm y for the last start reaches the last token (index 16).
         assert y[3].tolist() == [13, 14, 15, 16]
 
 
@@ -170,7 +216,7 @@ def test_train_loader_with_stride_1_covers_every_position():
     """With stride=1, sequential reads should visit every valid start."""
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "seq.bin"
-        _write_tokens(p, list(range(16)))  # 16 tokens, ctx 4 -> starts 0..11
+        _write_tokens(p, list(range(16)))
         loader = build_dataloader(
             p, context_len=4, batch_size=4, shuffle=False, stride=1,
             drop_last=False,

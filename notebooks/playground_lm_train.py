@@ -54,15 +54,11 @@
 # | B | 200M | 2,035 | 500, 1000, 1500, 2035 |
 # | C | 1B | 10,172 | 2000, 5000, 8000, 10172 |
 #
-# `PLM_MAX_STEPS` overrides a stage's step count — useful for a 10-step
-# smoke test before a full run.
-#
-# **GPU memory note:** batch 12 fits on a P100 (16 GB) with bf16 (which the
-# P100 supports natively), but does NOT fit on a T4 (16 GB, no bf16). For T4,
-# set `PLM_BATCH_SIZE=6` — grad accum auto-adjusts to 16 to keep the effective
-# batch at 96. **The train_loop must use fp16 + GradScaler on T4**; the
-# notebook can only pass the batch size, so that fp16 handling is Codex's
-# responsibility in train/loop.py.
+# **GPU memory note:** batch 12 fits on a P100 (16 GB) with bf16, but NOT on
+# a T4 (16 GB, no bf16). For T4, set `PLM_BATCH_SIZE=6` — grad accum
+# auto-adjusts to 16 to keep the effective batch at 96. `train_loop` handles
+# fp16 + GradScaler on non-bf16 hardware; the notebook only passes the batch
+# size and the resumed scaler state.
 #
 # `GH_TOKEN` must be set as a Kaggle secret with `repo` scope for the upload
 # step to work. Without it, training still runs; only checkpoint upload is
@@ -94,11 +90,6 @@ MODEL_CONFIG = {
 }
 
 # --- Batch size + gradient accumulation --------------------------------
-# Defaults: micro-batch 12 × grad accum 8 = effective batch 96 (P100 with bf16).
-# Override PLM_BATCH_SIZE on hardware that needs a smaller micro-batch (T4).
-# grad_accum_steps is derived so the effective batch stays at 96, which
-# keeps the token-per-step count (and therefore LR schedule + max_steps)
-# constant across hardware.
 TARGET_EFFECTIVE_BATCH = 96
 DEFAULT_MICRO_BATCH = 12
 micro_batch = int(os.environ.get("PLM_BATCH_SIZE", str(DEFAULT_MICRO_BATCH)))
@@ -114,7 +105,7 @@ if TARGET_EFFECTIVE_BATCH % micro_batch != 0:
     )
 grad_accum = TARGET_EFFECTIVE_BATCH // micro_batch
 
-# --- Training hyperparameters (used by this notebook + train_loop) -------
+# --- Training hyperparameters ------------------------------------------
 TRAIN_CONFIG = {
     "batch_size": micro_batch,
     "grad_accum_steps": grad_accum,
@@ -124,10 +115,7 @@ TRAIN_CONFIG = {
     "grad_clip": 1.0,
 }
 
-# --- Stage presets (from data/PRETRAIN_PLAN.md token budgets) -----------
-# Tokens per step = TARGET_EFFECTIVE_BATCH * context_len = 98,304. Stage
-# presets express token budgets; step counts stay constant across batch
-# overrides because the effective batch stays at 96.
+# --- Stage presets -----------------------------------------------------
 STAGE_PRESETS = {
     "A": {"max_steps": 204, "milestones": (50, 100, 150, 204)},
     "B": {"max_steps": 2035, "milestones": (500, 1000, 1500, 2035)},
@@ -149,7 +137,6 @@ else:
     MAX_STEPS = 200_000
     SAVE_MILESTONES = None
 
-# PLM_MAX_STEPS overrides both the stage preset and the 200k default.
 max_steps_env = os.environ.get("PLM_MAX_STEPS")
 if max_steps_env:
     MAX_STEPS = int(max_steps_env)
@@ -161,7 +148,6 @@ if micro_batch != DEFAULT_MICRO_BATCH:
         f"grad_accum_steps = {grad_accum} (effective batch {micro_batch * grad_accum})"
     )
 
-# Manifest config: full resolved training setup, recoverable from manifest.json.
 MANIFEST_CONFIG = {
     "model": MODEL_CONFIG,
     "train": TRAIN_CONFIG,
@@ -213,34 +199,6 @@ print(f"[train] micro-batch: {micro_batch}  grad_accum: {grad_accum}  "
 print(f"[train] torch.compile: {'ON' if COMPILE else 'off (set PLM_COMPILE=1 to enable)'}")
 
 # %% [markdown]
-# ## Data
-#
-# Nova's data lane publishes three files under `PLM_DATA_DIR`:
-#
-# - `train.bin` — flat uint16 token IDs, all of FineWeb-Edu sample + Playground text
-# - `val.bin`   — held-out split, same format
-# - `tokenizer/` — cached GPT-2 BPE assets
-#
-# `build_dataloader` memory-maps the file, so the corpus can be larger than RAM.
-# Train uses `stride=1` (every position is a sample); val uses the default
-# `stride=context_len` (non-overlapping, unbiased loss estimate).
-
-# %%
-train_loader = build_dataloader(
-    DATA_DIR / "train.bin",
-    context_len=MODEL_CONFIG["context_len"],
-    batch_size=TRAIN_CONFIG["batch_size"],
-    shuffle=True,
-    stride=1,
-)
-val_loader = build_dataloader(
-    DATA_DIR / "val.bin",
-    context_len=MODEL_CONFIG["context_len"],
-    batch_size=TRAIN_CONFIG["batch_size"],
-    shuffle=False,   # stride defaults to context_len (eval mode)
-)
-
-# %% [markdown]
 # ## Model + optimizer
 #
 # `PlaygroundLM` is initialized from random init — no pretrained weights.
@@ -259,18 +217,21 @@ optimizer = torch.optim.AdamW(
 )
 
 # %% [markdown]
-# ## Checkpoint manager
+# ## Checkpoint manager + resume
 #
-# Handles:
+# Runs BEFORE the data loaders are built, so that `start_step` can be passed
+# as `seed_offset` on the train loader — otherwise a resumed session replays
+# the exact same sampled windows as the previous session's first N batches.
+#
+# `CheckpointManager` handles:
 # - Resume from the latest checkpoint if one exists in `RUN_DIR`.
 # - Save every ~30 min (via `interval_s`) and at the stage's milestone steps.
 # - Keep the last N rolling checkpoints + all milestones.
 # - Emit a `manifest.json` the release script and demo frontend read.
 #
-# When `PLM_STAGE` is unset, milestones fall back to `CheckpointManager`'s
-# defaults (1000, 5000, 10000, ...). When it's set, the stage's milestones
-# are used so that even a 204-step Stage A run produces enough checkpoints
-# for the demo slider.
+# Resume also pulls `wall_time_s` (cumulative session time) and
+# `extra.grad_scaler` (GradScaler state from Claude's fp16 path) so a T4
+# session doesn't lose the scaler between resumes.
 
 # %%
 ckpt_kwargs = {
@@ -285,15 +246,49 @@ ckpt = CheckpointManager(**ckpt_kwargs)
 start_step = 0
 start_tokens_seen = 0
 start_wall_time_s = 0.0
+start_scaler_state = None
 resumed = ckpt.resume(model, optimizer)
 if resumed is not None:
     start_step = resumed["step"]
     start_tokens_seen = resumed["tokens_seen"]
     start_wall_time_s = resumed.get("wall_time_s", 0.0)
+    start_scaler_state = resumed.get("extra", {}).get("grad_scaler")
     print(
         f"[train] resumed from step {start_step} "
         f"({start_tokens_seen:,} tokens, {start_wall_time_s:.1f}s wall)"
     )
+    if start_scaler_state is not None:
+        print("[train] grad_scaler state restored")
+
+# %% [markdown]
+# ## Data
+#
+# Nova's data lane publishes three files under `PLM_DATA_DIR`:
+#
+# - `train.bin` — flat uint16 token IDs, all of FineWeb-Edu sample + Playground text
+# - `val.bin`   — held-out split, same format
+# - `tokenizer/` — cached GPT-2 BPE assets
+#
+# `build_dataloader` memory-maps the file, so the corpus can be larger than RAM.
+# Train uses `stride=1` (every position is a sample) and `seed_offset=start_step`
+# so resumed sessions sample different windows. Val uses the default
+# `stride=context_len` (non-overlapping, unbiased loss estimate).
+
+# %%
+train_loader = build_dataloader(
+    DATA_DIR / "train.bin",
+    context_len=MODEL_CONFIG["context_len"],
+    batch_size=TRAIN_CONFIG["batch_size"],
+    shuffle=True,
+    stride=1,
+    seed_offset=start_step,   # <-- resume non-replay
+)
+val_loader = build_dataloader(
+    DATA_DIR / "val.bin",
+    context_len=MODEL_CONFIG["context_len"],
+    batch_size=TRAIN_CONFIG["batch_size"],
+    shuffle=False,   # stride defaults to context_len (eval mode)
+)
 
 # %% [markdown]
 # ## Train
@@ -305,10 +300,10 @@ if resumed is not None:
 # - Every save, uploads to the GitHub release (every `UPLOAD_EVERY_N_SAVES` saves).
 # - Every 500 steps, computes val loss on 20 val batches.
 #
-# **T4 users:** `TRAIN_CONFIG["batch_size"]` is the micro-batch. `train_loop`
-# is responsible for reading `grad_accum_steps` from the config and applying
-# fp16 autocast + GradScaler on hardware without bf16 (T4). The notebook
-# doesn't touch precision; that's the loop's job.
+# **T4 users:** `TRAIN_CONFIG["batch_size"]` is the micro-batch.
+# `train_loop` reads `grad_accum_steps` and applies fp16 autocast +
+# GradScaler on hardware without bf16 (T4), restoring from
+# `start_scaler_state` on resume.
 
 # %%
 def upload_hook(step: int, save_count: int) -> None:
@@ -340,6 +335,7 @@ try:
         start_step=start_step,
         start_tokens_seen=start_tokens_seen,
         start_wall_time_s=start_wall_time_s,
+        start_scaler_state=start_scaler_state,
         max_steps=MAX_STEPS,
         device=device,
         on_save=upload_hook,

@@ -10,20 +10,25 @@
 #   x: LongTensor [batch_size, context_len]
 #   y: LongTensor [batch_size, context_len]  (x shifted left by 1 token)
 #
-# Memory-mapped, so we can train on a corpus larger than RAM.
+# Memory: the file is memory-mapped, so we never load the corpus into RAM.
+# The loader does NOT precompute an array of start positions — at 2.5B tokens
+# that would be ~20 GB. Starts are generated per batch on the fly:
+#   - shuffle=True:  rng.integers(0, max_start, size=batch_size) — random windows
+#   - shuffle=False: np.arange(pos, pos+batch_size, stride) — sequential windows
 #
 # Stride semantics:
 #   - stride=1 (train): every token position is a valid start. Adjacent
-#     windows overlap by context_len-1 tokens. This is how LM pretraining
-#     works — every token becomes the target of *some* prediction. Use with
-#     shuffle=True.
+#     windows overlap by context_len-1 tokens. Use with shuffle=True.
 #   - stride=context_len (eval): non-overlapping windows. Each token
 #     contributes to exactly one eval batch, so val_loss is an unbiased
 #     estimate over the held-out file. Use with shuffle=False.
+#   The caller picks the stride; default is stride=context_len (eval-safe).
 #
-#   The caller picks the stride; the loader doesn't guess. Default is
-#   stride=context_len (safe eval default); training code should pass
-#   stride=1 explicitly.
+# Resume semantics: pass `seed_offset=start_step` when resuming a run. Without
+# it, a resumed session replays the same sampled windows as the previous
+# session's first N batches (same seed, same RNG stream). The offset shifts
+# the RNG seed per session, keeping sampling deterministic but non-repeating
+# across resumes.
 
 import os
 from pathlib import Path
@@ -40,6 +45,7 @@ def build_dataloader(
     shuffle: bool = True,
     stride: int | None = None,
     seed: int = 42,
+    seed_offset: int = 0,
     drop_last: bool = True,
 ) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
     """
@@ -48,12 +54,15 @@ def build_dataloader(
     Args:
         path:        Path to .bin file of uint16 token IDs.
         context_len: Sequence length per sample (e.g. 1024 for GPT-2 small).
-        batch_size:  Batch size per yielded batch.
-        shuffle:     Randomize start positions per batch (True for train).
+        batch_size:  Batch size per yielded batch (micro-batch, not effective).
+        shuffle:     Random start positions per batch (True for train).
         stride:      Step between consecutive start positions in non-shuffled
                      mode. None means context_len (non-overlapping, eval-safe).
-                     Pass 1 for training when shuffle=True.
-        seed:        RNG seed for shuffle. Irrelevant when shuffle=False.
+                     Pass 1 for training when shuffle=True (stride irrelevant
+                     on the shuffle path, kept for symmetry).
+        seed:        Base RNG seed for shuffle.
+        seed_offset: Added to `seed` before RNG init. Pass `start_step` on
+                     resume to avoid replaying the same window order.
         drop_last:   Drop final incomplete batch (True for train to keep
                      gradient accumulation exact, False for eval to use all
                      tokens).
@@ -95,45 +104,48 @@ def build_dataloader(
     #                 y = tokens[s+1 : s+context_len+1]
     # So s ranges over [0, num_tokens - context_len - 1].
     max_start = num_tokens - context_len
-    # List of valid starts spaced by effective_stride.
-    all_starts = np.arange(0, max_start, effective_stride, dtype=np.int64)
 
-    rng = np.random.default_rng(seed) if shuffle else None
+    # Shuffle path: RNG seeded with (seed + seed_offset). Non-shuffle path
+    # ignores RNG entirely.
+    rng = np.random.default_rng(seed + seed_offset) if shuffle else None
 
     def generator() -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
         pos = 0  # for sequential mode
 
         while True:
             if rng is not None:
-                # Random starts with replacement (train mode).
-                starts = rng.choice(all_starts, size=batch_size, replace=True)
+                # Random starts with replacement. At 2.5B possible starts,
+                # a collision within a batch of 12 is negligible; repeats are
+                # harmless for training. O(batch_size) memory per call.
+                starts = rng.integers(0, max_start, size=batch_size)
                 yield _batch_from_starts(tokens, starts, context_len)
                 continue
 
-            # Sequential mode: walk through all_starts in order.
-            remaining = len(all_starts) - pos
-            if remaining <= 0:
-                # Wrapped around: restart from 0 for the next pass.
+            # Sequential mode: walk through positions in stride steps.
+            if pos >= max_start:
                 pos = 0
-                remaining = len(all_starts)
+            remaining_starts = (max_start - pos + effective_stride - 1) // effective_stride
+            if remaining_starts <= 0:
+                pos = 0
+                remaining_starts = (max_start + effective_stride - 1) // effective_stride
 
-            if remaining < batch_size:
+            if remaining_starts < batch_size:
                 if drop_last:
-                    # Not enough to fill the batch — wrap and top up.
-                    tail = all_starts[pos:]
-                    head = all_starts[: batch_size - len(tail)]
-                    starts = np.concatenate([tail, head])
-                    pos = batch_size - len(tail)
+                    # Wrap and top up from the beginning.
+                    tail = pos + np.arange(remaining_starts) * effective_stride
+                    needed = batch_size - remaining_starts
+                    head = np.arange(needed) * effective_stride
+                    starts = np.concatenate([tail, head]).astype(np.int64)
+                    pos = int(needed * effective_stride)
                 else:
-                    # Yield the partial batch, then stop.
-                    starts = all_starts[pos:]
-                    pos = len(all_starts)
+                    starts = (pos + np.arange(remaining_starts) * effective_stride).astype(np.int64)
+                    pos = max_start  # force wrap next call
                     if len(starts) > 0:
                         yield _batch_from_starts(tokens, starts, context_len)
                     return
             else:
-                starts = all_starts[pos : pos + batch_size]
-                pos += batch_size
+                starts = (pos + np.arange(batch_size) * effective_stride).astype(np.int64)
+                pos += batch_size * effective_stride
 
             yield _batch_from_starts(tokens, starts, context_len)
 
