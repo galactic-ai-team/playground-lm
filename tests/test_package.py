@@ -1,5 +1,9 @@
-import plm
+import playground_lm
 
 
 def test_version():
-    assert plm.__version__
+    assert playground_lm.__version__
+
+
+def test_tokenizer_exported():
+    assert callable(playground_lm.get_tokenizer)
