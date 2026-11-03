@@ -1,19 +1,25 @@
-# train/upload_release.py
-# Package and upload checkpoints to a GitHub release. Uses the GitHub CLI
-# (`gh`) which is preinstalled on Kaggle/Colab and authenticates via
-# GH_TOKEN env var. No extra sign-ups — just a token from Stephon's account
-# with `repo` scope, set as a Colab/Kaggle secret.
+# src/playground_lm/train/upload_release.py
+# Package and upload checkpoints to a GitHub release.
 #
-# Usage:
-#   python train/upload_release.py --run-dir /content/runs/plm-001 \
-#       --tag v0.1-checkpoints --repo galactic-ai-team/playground-lm
+# Public API (importable from the training notebook):
+#   upload(run_dir, repo, tag, gh_token) -> UploadResult
 #
-# Behavior:
-#   - Reads manifest.json from the run dir.
-#   - For each checkpoint not already on the release, uploads the .safetensors
-#     (NOT the optimizer state — that's only needed locally for resume).
-#   - Also uploads manifest.json itself.
-#   - Idempotent: re-running only uploads new checkpoints.
+# CLI (for ad-hoc use from a shell):
+#   python -m playground_lm.train.upload_release \
+#       --run-dir /kaggle/working/runs/plm-001 \
+#       --repo galactic-ai-team/playground-lm \
+#       --tag v0.1-checkpoints
+#
+# Uses the GitHub CLI (`gh`), preinstalled on Kaggle/Colab. Authenticates via
+# the token passed in or read from the GH_TOKEN env var. No extra deps, no
+# extra sign-ups — just a token from Stephon's account with `repo` scope.
+#
+# Idempotency:
+#   - Checkpoints already on the release are skipped by filename.
+#   - manifest.json is always re-uploaded (--clobber) so the demo frontend
+#     sees the latest set even when nothing new was added.
+#   - Only `.safetensors` weights are uploaded, NOT optimizer state — that's
+#     needed locally for resume but is useless (and huge) for the demo.
 
 import argparse
 import json
@@ -21,94 +27,147 @@ import os
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
-def run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
+@dataclass
+class UploadResult:
+    uploaded: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+    manifest_uploaded: bool = False
+    release_created: bool = False
+
+
+def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, check=check, capture_output=True, text=True)
 
 
-def ensure_release(repo: str, tag: str) -> None:
-    """Create the release if it doesn't exist."""
-    result = run(["gh", "release", "view", tag, "--repo", repo], check=False)
-    if result.returncode != 0:
-        print(f"[upload] creating release {tag} in {repo}")
-        run(
-            [
-                "gh", "release", "create", tag,
-                "--repo", repo,
-                "--title", f"PlaygroundLM checkpoints {tag}",
-                "--notes", "Rolling training checkpoints (safetensors only). "
-                           "See manifest.json for step and tokens_seen.",
-                "--latest",
-            ]
-        )
+def _ensure_release(repo: str, tag: str) -> bool:
+    """Create the release if it doesn't exist. Returns True if created."""
+    result = _run(["gh", "release", "view", tag, "--repo", repo], check=False)
+    if result.returncode == 0:
+        return False
+    print(f"[upload] creating release {tag} in {repo}")
+    _run([
+        "gh", "release", "create", tag,
+        "--repo", repo,
+        "--title", f"PlaygroundLM checkpoints {tag}",
+        "--notes",
+        "Rolling training checkpoints (safetensors only). "
+        "See manifest.json for step and tokens_seen.",
+        "--latest",
+    ])
+    return True
 
 
-def existing_assets(repo: str, tag: str) -> set[str]:
-    result = run(
+def _existing_assets(repo: str, tag: str) -> set[str]:
+    result = _run(
         ["gh", "release", "view", tag, "--repo", repo, "--json", "assets"],
     )
     data = json.loads(result.stdout)
     return {a["name"] for a in data.get("assets", [])}
 
 
-def upload(run_dir: Path, repo: str, tag: str) -> None:
+def _upload_one(repo: str, tag: str, file_path: Path) -> None:
+    """Upload a single file, overwriting if it exists."""
+    _run([
+        "gh", "release", "upload", tag, str(file_path),
+        "--repo", repo, "--clobber",
+    ])
+
+
+def upload(
+    run_dir: str | Path,
+    repo: str,
+    tag: str,
+    gh_token: str | None = None,
+) -> UploadResult:
+    """
+    Upload all not-yet-present checkpoints from `run_dir` to the GitHub
+    release `tag` in `repo`, plus a refreshed manifest.json.
+
+    Args:
+        run_dir:  Directory containing manifest.json and checkpoints/.
+        repo:     GitHub repo slug, e.g. "galactic-ai-team/playground-lm".
+        tag:      Release tag, e.g. "v0.1-checkpoints".
+        gh_token: GitHub token with `repo` scope. If None, reads from GH_TOKEN
+                  env var. Raises ValueError if neither is available.
+
+    Returns:
+        UploadResult listing what was uploaded / skipped.
+
+    Raises:
+        ValueError:  no token available.
+        SystemExit:  manifest missing or `gh` upload fails.
+    """
+    # Resolve token: explicit arg wins over env var. `gh` picks up GH_TOKEN
+    # from the process env automatically, so setting it here is sufficient.
+    token = gh_token or os.environ.get("GH_TOKEN")
+    if not token:
+        raise ValueError(
+            "upload(): no GitHub token — pass gh_token= or set GH_TOKEN env var"
+        )
+    os.environ["GH_TOKEN"] = token
+
+    run_dir = Path(run_dir)
     manifest_path = run_dir / "manifest.json"
     if not manifest_path.exists():
-        sys.exit(f"[upload] no manifest at {manifest_path}")
+        raise SystemExit(f"[upload] no manifest at {manifest_path}")
 
     with open(manifest_path) as f:
         manifest = json.load(f)
 
-    ensure_release(repo, tag)
-    present = existing_assets(repo, tag)
+    result = UploadResult()
+    result.release_created = _ensure_release(repo, tag)
 
-    # Always upload/refresh manifest.json.
+    present = _existing_assets(repo, tag)
+
+    # Always refresh manifest.json, even if nothing else changed. The demo
+    # reads this to discover what checkpoints exist.
     tmp_manifest = Path(tempfile.mkdtemp()) / "manifest.json"
     with open(tmp_manifest, "w") as f:
         json.dump(manifest, f, indent=2)
-    # Delete existing manifest so the refresh overwrites.
-    if "manifest.json" in present:
-        run(["gh", "release", "delete-asset", tag, "manifest.json", "--repo", repo, "-y"])
-    run(
-        [
-            "gh", "release", "upload", tag, str(tmp_manifest),
-            "--repo", repo, "--clobber",
-        ]
-    )
+    _upload_one(repo, tag, tmp_manifest)
+    result.manifest_uploaded = True
     print(f"[upload] manifest.json -> {tag}")
 
-    uploaded = 0
+    # Upload each checkpoint weight that isn't already there.
     for entry in manifest["checkpoints"]:
         name = Path(entry["path"]).name
         if name in present:
+            result.skipped.append(name)
             continue
         weights = run_dir / entry["path"]
         if not weights.exists():
             print(f"[upload] WARN: manifest references missing {weights}, skipping")
+            result.skipped.append(name)
             continue
-        run(
-            ["gh", "release", "upload", tag, str(weights), "--repo", repo, "--clobber"]
-        )
+        _upload_one(repo, tag, weights)
         print(f"[upload] step {entry['step']:>8} -> {name}")
-        uploaded += 1
+        result.uploaded.append(name)
 
-    print(f"[upload] done. {uploaded} new file(s) uploaded.")
+    print(
+        f"[upload] done. {len(result.uploaded)} new, "
+        f"{len(result.skipped)} already present."
+    )
+    return result
 
 
-def main() -> None:
-    p = argparse.ArgumentParser()
+def _cli_main() -> None:
+    p = argparse.ArgumentParser(
+        description="Upload PlaygroundLM checkpoints to a GitHub release.",
+    )
     p.add_argument("--run-dir", required=True, type=Path)
     p.add_argument("--repo", required=True)
     p.add_argument("--tag", required=True)
     args = p.parse_args()
 
-    if not os.environ.get("GH_TOKEN"):
-        sys.exit("[upload] GH_TOKEN env var not set. Set it to a token with repo scope.")
-
-    upload(args.run_dir, args.repo, args.tag)
+    try:
+        upload(args.run_dir, args.repo, args.tag)
+    except ValueError as e:
+        sys.exit(str(e))
 
 
 if __name__ == "__main__":
-    main()
+    _cli_main()
