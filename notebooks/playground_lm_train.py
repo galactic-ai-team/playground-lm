@@ -30,6 +30,7 @@
 #
 # Free-tools only: Kaggle P100/T4, checkpointed to a local run dir, uploaded
 # to a GitHub release via `gh`.
+
 #
 # See `README.md` for the full plan and eval setup.
 
@@ -43,7 +44,7 @@
 # | `PLM_STAGE` | Training stage preset: `A`, `B`, `C` — sets `max_steps`, `warmup_steps`, milestones | unset |
 # | `PLM_MAX_STEPS` | Override the stage's `max_steps` | stage default, else 200_000 |
 # | `PLM_WARMUP` | Override the stage's `warmup_steps` | stage default, else 2000 |
-# | `PLM_BATCH_SIZE` | Micro-batch size; `grad_accum_steps` is adjusted to keep the per-rank effective batch at 96 | `12` (P100); use `6` on T4 |
+# | `PLM_BATCH_SIZE` | Micro-batch size per GPU; `grad_accum_steps` is adjusted to keep the global effective batch at 96 sequences | `12` (P100); use `6` on T4 |
 # | `PLM_MAX_SESSION_S` | Wall-clock cap in seconds; loop stops gracefully before Kaggle's 12h GPU session kill | unset |
 # | `PLM_RUN_DIR` | Local checkpoint dir (survives within a session) | `/kaggle/working/runs/plm-001` |
 # | `PLM_DATA_DIR` | Directory with `train.bin`, `val.bin`, `tokenizer/` | `/kaggle/input/plm-data` |
@@ -51,15 +52,18 @@
 # | `PLM_RELEASE_TAG` | Release tag for checkpoints | `v0.1-checkpoints` |
 # | `PLM_RUN_ID` | Manifest run id | `plm-001` |
 # | `PLM_COMPILE` | Set to `1` to enable `torch.compile` | unset (off) |
+# | `PLM_DIST_TIMEOUT_MIN` | Multi-GPU only: how long a GPU waits for the other (e.g. during a rank-0 checkpoint upload) before giving up | `60` |
 #
 # **Stage presets** — see `src/playground_lm/train/stage_config.py` for the
 # source of truth. Resolved at runtime by `resolve_stage_plan()`.
 #
 # **GPU memory note:** batch 12 fits on a P100 (16 GB) with bf16, but NOT on
 # a T4 (16 GB, no bf16). For T4, set `PLM_BATCH_SIZE=6` — grad accum
-# auto-adjusts to 16 to keep the per-rank effective batch at 96. `train_loop`
-# handles fp16 + GradScaler on non-bf16 hardware.
+# auto-adjusts to keep the global effective batch at 96 sequences: 16 on one
+# T4, 8 per GPU on two. `train_loop` handles fp16 + GradScaler on non-bf16
+# hardware.
 #
+
 # **Kaggle session limits:** GPU sessions are killed at 12 hours; TPU sessions
 # at 9 hours. Set `PLM_MAX_SESSION_S` below the limit so a final checkpoint
 # lands before the session dies.
@@ -92,9 +96,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 # init_process_group, and sets the CUDA device. No-op without torchrun.
 from playground_lm.train.distributed import (
     setup,
+
     device_for,
     wrap,
-    unwrap,
     barrier,
     cleanup,
 )
@@ -121,22 +125,27 @@ MODEL_CONFIG = {
 }
 
 # --- Batch size + gradient accumulation --------------------------------
-# TARGET_EFFECTIVE_BATCH is the per-rank effective batch. Under torchrun,
-# the true global batch is TARGET_EFFECTIVE_BATCH * WORLD_SIZE.
+# TARGET_EFFECTIVE_BATCH is the GLOBAL effective batch: sequences per
+# optimizer step summed over all GPUs. Keeping it fixed (Claude's review)
+# means the LR schedule, the stage presets (which count steps) and
+# tokens_per_step stay the same whether a session runs on one T4 or two, so
+
+# a run can resume on either. Two GPUs halve the per-GPU accumulation instead.
 TARGET_EFFECTIVE_BATCH = 96
 DEFAULT_MICRO_BATCH = 12
 micro_batch = int(os.environ.get("PLM_BATCH_SIZE", str(DEFAULT_MICRO_BATCH)))
 if micro_batch <= 0:
     raise ValueError(f"PLM_BATCH_SIZE must be positive, got {micro_batch}")
-if TARGET_EFFECTIVE_BATCH % micro_batch != 0:
+_per_micro_step = micro_batch * WORLD_SIZE  # sequences per micro-step, all GPUs
+if TARGET_EFFECTIVE_BATCH % _per_micro_step != 0:
     raise ValueError(
-        f"PLM_BATCH_SIZE={micro_batch} does not divide "
+        f"PLM_BATCH_SIZE={micro_batch} x {WORLD_SIZE} GPU(s) does not divide "
         f"TARGET_EFFECTIVE_BATCH={TARGET_EFFECTIVE_BATCH}; "
         f"grad_accum_steps would not be an integer. "
-        f"Pick a divisor of {TARGET_EFFECTIVE_BATCH}: "
-        f"{[d for d in range(1, TARGET_EFFECTIVE_BATCH + 1) if TARGET_EFFECTIVE_BATCH % d == 0]}"
+        f"Valid PLM_BATCH_SIZE values here: "
+        f"{[d for d in range(1, TARGET_EFFECTIVE_BATCH + 1) if TARGET_EFFECTIVE_BATCH % (d * WORLD_SIZE) == 0]}"
     )
-grad_accum = TARGET_EFFECTIVE_BATCH // micro_batch
+grad_accum = TARGET_EFFECTIVE_BATCH // _per_micro_step
 
 # --- Stage presets + env overrides (logic in stage_config.py) ----------
 from playground_lm.train.stage_config import resolve_stage_plan, warmup_warning
@@ -153,6 +162,7 @@ _plan = resolve_stage_plan(
     ),
 )
 MAX_STEPS = _plan.max_steps
+
 WARMUP_STEPS = _plan.warmup_steps
 SAVE_MILESTONES = _plan.milestones
 stage = _plan.stage
@@ -168,7 +178,8 @@ if os.environ.get("PLM_WARMUP"):
 if micro_batch != DEFAULT_MICRO_BATCH:
     _log(
         f"[train] PLM_BATCH_SIZE override → batch_size = {micro_batch}, "
-        f"grad_accum_steps = {grad_accum} (per-rank effective {micro_batch * grad_accum})"
+        f"grad_accum_steps = {grad_accum} (global effective "
+        f"{micro_batch * grad_accum * WORLD_SIZE})"
     )
 
 # Optional wall-clock cap. Kaggle GPU sessions are killed at 12 hours; set
@@ -184,6 +195,7 @@ if MAX_SESSION_S is not None:
 TRAIN_CONFIG = {
     "batch_size": micro_batch,
     "grad_accum_steps": grad_accum,
+
     "context_len": MODEL_CONFIG["context_len"],
     "lr": 6e-4,
     "warmup_steps": WARMUP_STEPS,
@@ -216,6 +228,7 @@ MANIFEST_CONFIG = {
 
 # %%
 from playground_lm.model import PlaygroundLM
+
 from playground_lm.tokenizer import get_tokenizer
 from playground_lm.train.checkpoint import CheckpointManager
 from playground_lm.train.data import build_dataloader
@@ -248,15 +261,17 @@ _log(f"[train] torch.compile: {'ON' if COMPILE else 'off (set PLM_COMPILE=1 to e
 # Only `MODEL_CONFIG` goes to the constructor; `TRAIN_CONFIG` goes to
 # `train_loop`.
 #
+
 # **Order matters:** build the raw model, resume weights from the checkpoint
-# into it, THEN call `wrap(model, info)`. `wrap()` broadcasts rank 0's weights
-# to the other ranks, so resume has to happen on rank 0 first. Each rank
-# builds its own model but ends up with rank 0's weights after `wrap()`.
+# into it, THEN call `wrap(model, info)`, THEN `torch.compile` (if enabled).
+# `wrap()` broadcasts rank 0's weights to the other ranks, so resume has to
+# happen on rank 0 first. Compiling last matters too: a compiled module's
+# state_dict keys gain an `_orig_mod.` prefix, so resuming a checkpoint
+# (saved from the plain model) into an already-compiled model fails with
+# missing keys; and PyTorch recommends compile(DDP(model)) for DDP.
 
 # %%
 model = PlaygroundLM(**MODEL_CONFIG).to(device)
-if COMPILE and str(device).startswith("cuda"):
-    model = torch.compile(model)
 optimizer = torch.optim.AdamW(
     model.parameters(),
     lr=TRAIN_CONFIG["lr"],
@@ -279,6 +294,7 @@ optimizer = torch.optim.AdamW(
 ckpt_kwargs = {
     "run_dir": RUN_DIR,
     "run_id": RUN_ID,
+
     "config": MANIFEST_CONFIG,
 }
 if SAVE_MILESTONES is not None:
@@ -312,6 +328,9 @@ if resumed is not None:
 # %%
 model = wrap(model, info)
 
+if COMPILE and str(device).startswith("cuda"):
+    model = torch.compile(model)  # after resume and wrap (see above)
+
 # %% [markdown]
 # ## Data
 #
@@ -340,6 +359,7 @@ val_loader = build_dataloader(
     batch_size=TRAIN_CONFIG["batch_size"],
     shuffle=False,
 )
+
 
 # %% [markdown]
 # ## Train
@@ -373,6 +393,7 @@ try:
         val_loader=val_loader,
         checkpoint_manager=ckpt,
         config=TRAIN_CONFIG,
+
         start_step=start_step,
         start_tokens_seen=start_tokens_seen,
         start_wall_time_s=start_wall_time_s,
@@ -387,14 +408,25 @@ except KeyboardInterrupt:
     raise
 
 # %% [markdown]
-# ## Final upload (rank 0 only)
+# ## Teardown, then final upload (rank 0 only)
+#
+# All ranks meet at the barrier and leave the process group FIRST; only then
+# does rank 0 upload. The other order (upload, then barrier) left rank 1
+# waiting at the barrier for the whole upload, and a multi-GB upload can
+# outlast the process-group timeout, which would crash the job while rank 0
+# is still uploading. Once rank 1 has exited cleanly, torchrun simply waits
+# for rank 0 to finish.
 
 # %%
+barrier(info)
+cleanup()
+
 if IS_MAIN:
     try:
         upload_release(
             run_dir=RUN_DIR,
             repo=REPO,
+
             tag=RELEASE_TAG,
             gh_token=os.environ["GH_TOKEN"],
         )
@@ -402,14 +434,3 @@ if IS_MAIN:
         _log("[train] GH_TOKEN not set; final upload skipped")
     except Exception as e:
         _log(f"[train] final upload failed: {e}")
-
-# %% [markdown]
-# ## Teardown
-#
-# `cleanup()` destroys the process group. Every rank must call it. `unwrap()`
-# is available if a caller needs the bare module post-training; not required
-# here, but noted in case the loop returns a wrapped model.
-
-# %%
-barrier(info)
-cleanup()
