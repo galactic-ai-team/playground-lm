@@ -1,4 +1,21 @@
-"""Training for notebook-created models, optimizers and infinite batch iterators."""
+"""Training for notebook-created models, optimizers and infinite batch iterators.
+
+Review fixes (Claude):
+  * Mixed precision is chosen from the GPU's compute capability. Recent
+    PyTorch reports torch.cuda.is_bf16_supported() == True on a T4 and a P100
+    because it counts *emulated* bf16, which is far slower there. Native bf16
+    needs compute capability 8.0+ (A100, L4, ...); older GPUs now get FP16 +
+    GradScaler. config["amp_dtype"] = "auto" | "bf16" | "fp16" | "fp32"
+    overrides, and the choice is logged and written to the first metrics row.
+  * FP16 overflow retries are capped (config["max_overflow_retries"], default
+    25 in a row); before, a persistent overflow would retry forever silently.
+  * Validation uses the same batches every time: the first eval reads
+    config["eval_batches"] (default 20) batches and later evals reuse them, so
+    val_loss is comparable across the run instead of drifting with the
+    iterator. Interval: config["eval_interval"] (default 500).
+  * Optional config["max_session_s"]: save and return cleanly when a Kaggle
+    or Colab session is about to run out.
+"""
 
 import json
 import logging
@@ -20,12 +37,36 @@ def _learning_rate(step, peak, warmup, total):
     return peak * (0.1 + 0.45 * (1.0 + math.cos(math.pi * progress)))
 
 
+def _pick_amp_dtype(device, requested="auto"):
+    """None (FP32), torch.bfloat16 or torch.float16 for this device."""
+    names = {"fp32": None, "float32": None, "bf16": torch.bfloat16,
+             "bfloat16": torch.bfloat16, "fp16": torch.float16, "float16": torch.float16}
+    if device.type != "cuda":
+        return None
+    if requested != "auto":
+        if requested not in names:
+            raise ValueError(f"amp_dtype must be auto, bf16, fp16 or fp32, got {requested!r}")
+        return names[requested]
+    # Native bf16 needs compute capability 8.0+ (Ampere: A100, A10, L4, ...).
+    # is_bf16_supported() is True on a T4/P100 too, via slow emulation.
+    major, _minor = torch.cuda.get_device_capability(device)
+    return torch.bfloat16 if major >= 8 else torch.float16
+
+
+def _make_grad_scaler():
+    try:
+        return torch.amp.GradScaler("cuda")  # PyTorch 2.3+
+    except (AttributeError, TypeError):
+        return torch.cuda.amp.GradScaler()  # older 2.x
+
+
 def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
           config, start_step=0, max_steps=200_000, device="cpu", on_save=None,
           start_tokens_seen: int = 0, start_wall_time_s: float = 0.0):
     """Train from completed update start_step through max_steps (inclusive).
 
-    Append one metrics record per update, with val_loss every 500 updates.
+    Append one metrics record per update, with val_loss every eval_interval
+    updates (default 500) on the same eval_batches batches each time.
     Throughput excludes validation, logging and saving. wall_time_s starts at
     start_wall_time_s; the one-based callback save_count covers this invocation
     only. Token counts start at start_tokens_seen and assume full batches of
@@ -50,13 +91,16 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
     device = torch.device(device)
     if device.type not in ("cpu", "cuda"):
         raise ValueError("this loop supports CPU and CUDA")
-    amp_dtype, scaler = None, None
-    if device.type == "cuda":
-        with torch.cuda.device(device):
-            amp_dtype = (torch.bfloat16 if torch.cuda.is_bf16_supported()
-                         else torch.float16)
-        if amp_dtype == torch.float16:
-            scaler = torch.cuda.amp.GradScaler()
+    amp_dtype = _pick_amp_dtype(device, config.get("amp_dtype", "auto"))
+    scaler = _make_grad_scaler() if amp_dtype == torch.float16 else None
+    amp_name = {None: "fp32", torch.bfloat16: "bf16", torch.float16: "fp16"}[amp_dtype]
+    logger.info("mixed precision: %s%s", amp_name, " + GradScaler" if scaler else "")
+    max_overflow_retries = int(config.get("max_overflow_retries", 25))
+    eval_interval = int(config.get("eval_interval", 500))
+    eval_batches = int(config.get("eval_batches", 20))
+    max_session_s = config.get("max_session_s")
+    if eval_interval <= 0 or eval_batches <= 0:
+        raise ValueError("eval_interval and eval_batches must be positive")
 
     def autocast():
         return (nullcontext() if amp_dtype is None else
@@ -68,6 +112,10 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
 
     step, save_count, last_saved_step = start_step, 0, None
     tokens_seen = start_tokens_seen
+    consecutive_overflows = 0
+    val_cache = []  # first eval's batches, reused so val_loss is comparable
+    first_record = True
+    session_started = time.monotonic()  # separate clock: perf_counter is for throughput
     started = time.perf_counter()
     run_dir = Path(checkpoint_manager.run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -117,8 +165,14 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
                     scaler.step(optimizer)
                     scaler.update()
                     if scaler.get_scale() < old_scale:
+                        consecutive_overflows += 1
+                        if consecutive_overflows > max_overflow_retries:
+                            raise FloatingPointError(
+                                f"FP16 overflow on {consecutive_overflows} attempts in a row at "
+                                f"update {step + 1}; stopping (last checkpoint is intact)")
                         logger.warning("FP16 overflow; retrying update %d", step + 1)
                         continue
+                consecutive_overflows = 0
                 step += 1
                 tokens_seen += tokens_per_step
                 synchronize()
@@ -126,17 +180,22 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
                 record = dict(step=step, loss=loss_sum.item() / accum,
                               lr=lr, tokens_per_sec=tokens_per_step / elapsed,
                               tokens_seen=tokens_seen)
-                if step % 500 == 0:
+                if first_record:
+                    record["amp_dtype"] = amp_name
+                    first_record = False
+                if step % eval_interval == 0:
                     model.eval()
                     try:
                         val_sum = torch.zeros((), device=device, dtype=torch.float32)
                         with torch.no_grad():
-                            for _ in range(20):
-                                x, y = next(val_loader)
+                            for i in range(eval_batches):
+                                if i == len(val_cache):
+                                    val_cache.append(next(val_loader))
+                                x, y = val_cache[i]
                                 with autocast():
                                     _, val_loss = model(x.to(device), y.to(device))
                                 val_sum += val_loss.detach().float()
-                        record["val_loss"] = val_sum.item() / 20
+                        record["val_loss"] = val_sum.item() / eval_batches
                     finally:
                         model.train()
                 record["wall_time_s"] = (
@@ -147,6 +206,10 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
                 logger.info("%s", json.dumps(record))
                 if checkpoint_manager.should_save(step):
                     save()
+                if (max_session_s is not None
+                        and time.monotonic() - session_started >= float(max_session_s)):
+                    logger.info("session time budget reached at update %d; saving", step)
+                    break
             save()
     except KeyboardInterrupt:
         optimizer.zero_grad(set_to_none=True)
