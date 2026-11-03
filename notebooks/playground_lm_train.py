@@ -35,8 +35,9 @@
 #
 # | Env var | Meaning | Default |
 # |---|---|---|
-# | `PLM_STAGE` | Training stage preset: `A`, `B`, `C` — sets `max_steps` and milestones | unset |
+# | `PLM_STAGE` | Training stage preset: `A`, `B`, `C` — sets `max_steps`, `warmup_steps`, milestones | unset |
 # | `PLM_MAX_STEPS` | Override the stage's `max_steps` | stage default, else 200_000 |
+# | `PLM_WARMUP` | Override the stage's `warmup_steps` | stage default, else 2000 |
 # | `PLM_BATCH_SIZE` | Micro-batch size; `grad_accum_steps` is adjusted to keep the effective batch at 96 | `12` (P100); use `6` on T4 |
 # | `PLM_RUN_DIR` | Local checkpoint dir (survives within a session) | `/kaggle/working/runs/plm-001` |
 # | `PLM_DATA_DIR` | Directory with `train.bin`, `val.bin`, `tokenizer/` | `/kaggle/input/plm-data` |
@@ -48,11 +49,11 @@
 # **Stage presets** (from `data/PRETRAIN_PLAN.md` token budgets, converted to
 # step counts at 98,304 tokens/step = 12 micro-batch × 8 accum × 1024 context):
 #
-# | Stage | Token budget | Approx steps | Milestones |
-# |---|---|---|---|
-# | A | 20M | 204 | 50, 100, 150, 204 |
-# | B | 200M | 2,035 | 500, 1000, 1500, 2035 |
-# | C | 1B | 10,172 | 2000, 5000, 8000, 10172 |
+# | Stage | Token budget | Steps | Warmup | Milestones |
+# |---|---|---|---|---|
+# | A | 20M | 204 | 50 | 50, 100, 150, 204 |
+# | B | 200M | 2,035 | 200 | 500, 1000, 1500, 2035 |
+# | C | 1B | 10,172 | 1000 | 2000, 5000, 8000, 10172 |
 #
 # **GPU memory note:** batch 12 fits on a P100 (16 GB) with bf16, but NOT on
 # a T4 (16 GB, no bf16). For T4, set `PLM_BATCH_SIZE=6` — grad accum
@@ -105,26 +106,14 @@ if TARGET_EFFECTIVE_BATCH % micro_batch != 0:
     )
 grad_accum = TARGET_EFFECTIVE_BATCH // micro_batch
 
-# --- Training hyperparameters ------------------------------------------
-TRAIN_CONFIG = {
-    "batch_size": micro_batch,
-    "grad_accum_steps": grad_accum,
-    # Required by train_loop (tokens_per_step); keep in sync with the model.
-    "context_len": MODEL_CONFIG["context_len"],
-    "lr": 6e-4,
-    "warmup_steps": 2000,
-    "weight_decay": 0.1,
-    "grad_clip": 1.0,
-}
-# Optional: stop cleanly (after a save) before Kaggle's 12-hour session cap.
-if os.environ.get("PLM_MAX_SESSION_S"):
-    TRAIN_CONFIG["max_session_s"] = float(os.environ["PLM_MAX_SESSION_S"])
-
 # --- Stage presets -----------------------------------------------------
+# warmup_steps is tuned per stage so that short stages (A) actually reach
+# peak LR instead of spending the entire run in warmup. Rule of thumb:
+# warmup is ~10% of steps for tiny runs, ~5% for medium, ~10% for long.
 STAGE_PRESETS = {
-    "A": {"max_steps": 204, "milestones": (50, 100, 150, 204)},
-    "B": {"max_steps": 2035, "milestones": (500, 1000, 1500, 2035)},
-    "C": {"max_steps": 10172, "milestones": (2000, 5000, 8000, 10172)},
+    "A": {"max_steps": 204,   "warmup_steps": 50,   "milestones": (50, 100, 150, 204)},
+    "B": {"max_steps": 2035,  "warmup_steps": 200,  "milestones": (500, 1000, 1500, 2035)},
+    "C": {"max_steps": 10172, "warmup_steps": 1000, "milestones": (2000, 5000, 8000, 10172)},
 }
 
 stage = os.environ.get("PLM_STAGE", "").upper() or None
@@ -137,15 +126,30 @@ if stage is not None and stage not in STAGE_PRESETS:
 if stage is not None:
     preset = STAGE_PRESETS[stage]
     MAX_STEPS = preset["max_steps"]
+    WARMUP_STEPS = preset["warmup_steps"]
     SAVE_MILESTONES = preset["milestones"]
 else:
     MAX_STEPS = 200_000
+    WARMUP_STEPS = 2000
     SAVE_MILESTONES = None
 
+# PLM_MAX_STEPS and PLM_WARMUP override both the stage presets and the
+# unset-stage defaults. Both are absolute step counts.
 max_steps_env = os.environ.get("PLM_MAX_STEPS")
 if max_steps_env:
     MAX_STEPS = int(max_steps_env)
     print(f"[train] PLM_MAX_STEPS override → max_steps = {MAX_STEPS}")
+
+warmup_env = os.environ.get("PLM_WARMUP")
+if warmup_env:
+    WARMUP_STEPS = int(warmup_env)
+    print(f"[train] PLM_WARMUP override → warmup_steps = {WARMUP_STEPS}")
+
+if WARMUP_STEPS >= MAX_STEPS:
+    print(
+        f"[train] WARN: warmup_steps ({WARMUP_STEPS}) >= max_steps ({MAX_STEPS}); "
+        f"LR will never reach peak. Consider PLM_WARMUP or a larger stage."
+    )
 
 if micro_batch != DEFAULT_MICRO_BATCH:
     print(
@@ -153,11 +157,27 @@ if micro_batch != DEFAULT_MICRO_BATCH:
         f"grad_accum_steps = {grad_accum} (effective batch {micro_batch * grad_accum})"
     )
 
+# --- Training hyperparameters ------------------------------------------
+TRAIN_CONFIG = {
+    "batch_size": micro_batch,
+    "grad_accum_steps": grad_accum,
+    # Required by train_loop (tokens_per_step); keep in sync with the model.
+    "context_len": MODEL_CONFIG["context_len"],
+    "lr": 6e-4,
+    "warmup_steps": WARMUP_STEPS,
+    "weight_decay": 0.1,
+    "grad_clip": 1.0,
+}
+# Optional: stop cleanly (after a save) before Kaggle's 12-hour session cap.
+if os.environ.get("PLM_MAX_SESSION_S"):
+    TRAIN_CONFIG["max_session_s"] = float(os.environ["PLM_MAX_SESSION_S"])
+
 MANIFEST_CONFIG = {
     "model": MODEL_CONFIG,
     "train": TRAIN_CONFIG,
     "stage": stage,
     "max_steps": MAX_STEPS,
+    "warmup_steps": WARMUP_STEPS,
     "tokens_per_step": TARGET_EFFECTIVE_BATCH * MODEL_CONFIG["context_len"],
 }
 
@@ -198,7 +218,7 @@ if device == "cpu":
     print("[train] WARNING: no GPU. This will be extremely slow.")
 else:
     print(f"[train] device: {torch.cuda.get_device_name(0)}")
-print(f"[train] stage: {stage or '(none)'}  max_steps: {MAX_STEPS}")
+print(f"[train] stage: {stage or '(none)'}  max_steps: {MAX_STEPS}  warmup_steps: {WARMUP_STEPS}")
 print(f"[train] micro-batch: {micro_batch}  grad_accum: {grad_accum}  "
       f"effective: {micro_batch * grad_accum}")
 print(f"[train] torch.compile: {'ON' if COMPILE else 'off (set PLM_COMPILE=1 to enable)'}")
@@ -228,15 +248,9 @@ optimizer = torch.optim.AdamW(
 # as `seed_offset` on the train loader — otherwise a resumed session replays
 # the exact same sampled windows as the previous session's first N batches.
 #
-# `CheckpointManager` handles:
-# - Resume from the latest checkpoint if one exists in `RUN_DIR`.
-# - Save every ~30 min (via `interval_s`) and at the stage's milestone steps.
-# - Keep the last N rolling checkpoints + all milestones.
-# - Emit a `manifest.json` the release script and demo frontend read.
-#
-# Resume also pulls `wall_time_s` (cumulative session time) and
-# `extra.grad_scaler` (GradScaler state from Claude's fp16 path) so a T4
-# session doesn't lose the scaler between resumes.
+# Resume also pulls `wall_time_s` and `extra.grad_scaler` (GradScaler state
+# from Claude's fp16 path) so a T4 session doesn't lose the scaler between
+# resumes.
 
 # %%
 ckpt_kwargs = {
@@ -275,9 +289,8 @@ if resumed is not None:
 # - `tokenizer/` — cached GPT-2 BPE assets
 #
 # `build_dataloader` memory-maps the file, so the corpus can be larger than RAM.
-# Train uses `stride=1` (every position is a sample) and `seed_offset=start_step`
-# so resumed sessions sample different windows. Val uses the default
-# `stride=context_len` (non-overlapping, unbiased loss estimate).
+# Train uses `stride=1` and `seed_offset=start_step` so resumed sessions sample
+# different windows. Val uses `stride=context_len` (non-overlapping, unbiased).
 
 # %%
 train_loader = build_dataloader(
@@ -286,13 +299,13 @@ train_loader = build_dataloader(
     batch_size=TRAIN_CONFIG["batch_size"],
     shuffle=True,
     stride=1,
-    seed_offset=start_step,   # <-- resume non-replay
+    seed_offset=start_step,
 )
 val_loader = build_dataloader(
     DATA_DIR / "val.bin",
     context_len=MODEL_CONFIG["context_len"],
     batch_size=TRAIN_CONFIG["batch_size"],
-    shuffle=False,   # stride defaults to context_len (eval mode)
+    shuffle=False,
 )
 
 # %% [markdown]
@@ -300,7 +313,7 @@ val_loader = build_dataloader(
 #
 # Everything below is driven by `train_loop`. The loop:
 # - Runs forward+backward with `grad_accum_steps` accumulation.
-# - Applies the LR schedule (linear warmup, cosine decay).
+# - Applies the LR schedule (linear warmup to `warmup_steps`, cosine decay to 10%).
 # - Every N steps, checks `ckpt.should_save(step)` and saves if due.
 # - Every save, uploads to the GitHub release (every `UPLOAD_EVERY_N_SAVES` saves).
 # - Every 500 steps, computes val loss on 20 val batches.
@@ -325,7 +338,6 @@ def upload_hook(step: int, save_count: int) -> None:
     except KeyError:
         print("[train] WARN: GH_TOKEN not set; skipping checkpoint upload")
     except Exception as e:
-        # Upload failure should not kill training.
         print(f"[train] WARN: upload failed: {e}")
 
 
