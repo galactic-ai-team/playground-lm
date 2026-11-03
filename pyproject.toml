@@ -15,6 +15,10 @@ dependencies = [
 test = [
     "pytest>=8,<10",
 ]
+export = [
+    "torch>=2.2",
+    "safetensors>=0.4",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

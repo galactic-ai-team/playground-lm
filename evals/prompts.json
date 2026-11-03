@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "tokenizer": "gpt2",
+  "max_context_tokens": 1024,
+  "held_out_probes": [
+    {
+      "id": "continuation_01",
+      "category": "narrative",
+      "prompt": "At sunrise, the tiny observatory received a signal that nobody could explain. The message began",
+      "evaluation": "coherent_continuation"
+    },
+    {
+      "id": "continuation_02",
+      "category": "narrative",
+      "prompt": "The team opened the locked door and discovered that the room contained",
+      "evaluation": "coherent_continuation"
+    },
+    {
+      "id": "reasoning_01",
+      "category": "arithmetic",
+      "prompt": "A robot has 7 blue tiles and 5 red tiles. It gives away 4 tiles. How many tiles remain?\nAnswer:",
+      "reference": "8",
+      "evaluation": "short_answer"
+    },
+    {
+      "id": "reasoning_02",
+      "category": "sequence",
+      "prompt": "Complete the sequence: 3, 6, 12, 24,",
+      "reference": "48",
+      "evaluation": "short_answer"
+    },
+    {
+      "id": "reasoning_03",
+      "category": "logic",
+      "prompt": "All glimmers are bright. Nori is a glimmer. Is Nori bright?\nAnswer:",
+      "reference": "yes",
+      "evaluation": "short_answer"
+    },
+    {
+      "id": "reasoning_04",
+      "category": "logic",
+      "prompt": "Mira is taller than Theo. Theo is taller than Lani. Who is shortest?\nAnswer:",
+      "reference": "Lani",
+      "evaluation": "short_answer"
+    },
+    {
+      "id": "format_01",
+      "category": "format",
+      "prompt": "Write three colors, separated by commas:\n",
+      "evaluation": "format_following"
+    },
+    {
+      "id": "format_02",
+      "category": "format",
+      "prompt": "Name an animal and give one fact about it.\nAnimal:",
+      "evaluation": "format_following"
+    },
+    {
+      "id": "playground_01",
+      "category": "world",
+      "prompt": "A new explorer reaches Spawn Commons. They look around and say,",
+      "evaluation": "coherent_continuation"
+    },
+    {
+      "id": "playground_02",
+      "category": "collaboration",
+      "prompt": "Two agents disagree about a puzzle. Instead of arguing, they decide to",
+      "evaluation": "coherent_continuation"
+    },
+    {
+      "id": "playground_03",
+      "category": "riddle",
+      "prompt": "A mysterious stone displays three symbols: a moon, a key, and a tree. The explorer notices",
+      "evaluation": "coherent_continuation"
+    },
+    {
+      "id": "generalization_01",
+      "category": "instruction",
+      "prompt": "Explain why a map is useful when exploring a new place.\nExplanation:",
+      "evaluation": "instruction_following"
+    }
+  ],
+  "demo_riddles": [
+    {
+      "id": "riddle_01",
+      "prompt": "Riddle: I have pages but I am not a tree. I hold stories but never speak. What am I?\nAnswer:",
+      "answer": "a book"
+    },
+    {
+      "id": "riddle_02",
+      "prompt": "Riddle: I can open a door, but I have no hands. I fit in a pocket and turn in a lock. What am I?\nAnswer:",
+      "answer": "a key"
+    },
+    {
+      "id": "riddle_03",
+      "prompt": "Riddle: I grow shorter every time I brighten a dark room. What am I?\nAnswer:",
+      "answer": "a candle"
+    },
+    {
+      "id": "riddle_04",
+      "prompt": "Riddle: I carry travelers across a river without taking a single step. What am I?\nAnswer:",
+      "answer": "a bridge"
+    },
+    {
+      "id": "riddle_05",
+      "prompt": "Riddle: I show mountains, streets, and oceans, yet I hold no water or stone. What am I?\nAnswer:",
+      "answer": "a map"
+    },
+    {
+      "id": "riddle_06",
+      "prompt": "Riddle: I follow you in sunlight but disappear in complete darkness. What am I?\nAnswer:",
+      "answer": "a shadow"
+    },
+    {
+      "id": "riddle_07",
+      "prompt": "Riddle: I have hands that never clap and a face that never smiles. What am I?\nAnswer:",
+      "answer": "a clock"
+    },
+    {
+      "id": "riddle_08",
+      "prompt": "Riddle: I return your words without understanding their meaning. What am I?\nAnswer:",
+      "answer": "an echo"
+    }
+  ]
+}
+
