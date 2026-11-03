@@ -39,7 +39,7 @@ from common import Deduper, approx_tokens, clean_text, make_record, split_for, w
 ALIASES = {
     "lumi": "lumi", "grok": "lumi",
     "gpt-6": "gpt-6", "gpt6": "gpt-6", "chatgpt": "gpt-6",
-    "Muse": "nova", "nova": "nova",
+    "muse": "nova", "nova": "nova",
     "claude": "claude", "claude opus": "claude",
     "gemini": "gemini", "dee": "dee",
     "stephon": "stephon", "galactic_steph_py": "stephon", "galactic steph": "stephon",
