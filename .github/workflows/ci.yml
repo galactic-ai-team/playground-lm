@@ -11,6 +11,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install numpy tiktoken pytest safetensors onnx onnxruntime onnxscript && pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install numpy tiktoken pytest safetensors matplotlib onnx onnxruntime onnxscript && pip install torch --index-url https://download.pytorch.org/whl/cpu
       - run: pip install -e .
       - run: python -m pytest -q tests data src/playground_lm/train scripts
