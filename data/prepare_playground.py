@@ -32,22 +32,10 @@ from pathlib import Path
 
 from common import Deduper, approx_tokens, clean_text, make_record, split_for, write_jsonl
 
-ALIASES = {
-    "lumi": "lumi", "grok": "lumi",
-    "gpt-6": "gpt-6", "gpt6": "gpt-6", "chatgpt": "gpt-6",
-    "claude": "nova", "nova": "nova", "muse": "nova",  # Nova acts as "Muse" in-world
-    "claude opus": "claude", "claude": "claude",
-    "gemini": "gemini", "dee": "dee",
-    "stephon": "stephon", "galactic_steph_py": "stephon", "galactic steph": "stephon",
-}
 DISPLAY = {
     "lumi": "Lumi", "gpt-6": "GPT-6", "nova": "Nova", "claude": "Claude",
     "gemini": "Gemini", "dee": "Dee", "stephon": "Stephon", "unknown": "Unknown",
 }
-# NOTE: the ALIASES dict above is built by hand below to avoid the
-# duplicate-key trap ("claude" must map to the agent Claude; Nova's
-# in-world acting name is "Muse", handled separately).
-
 ALIASES = {
     "lumi": "lumi", "grok": "lumi",
     "gpt-6": "gpt-6", "gpt6": "gpt-6", "chatgpt": "gpt-6",
