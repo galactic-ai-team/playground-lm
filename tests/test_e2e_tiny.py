@@ -2,20 +2,23 @@
 """CPU-only end-to-end smoke test for PlaygroundLM.
 
 Covers:
-  synthetic uint16 dataset
-    -> real train loop
-    -> real CheckpointManager
-    -> safetensors training weights
-    -> temporary combined evaluation checkpoint
-    -> export_checkpoint()
-    -> run_eval.load_model(), validation_metrics(), evaluate_prompts()
-    -> export_onnx.export_bundle() (if ONNX dependencies installed)
-    -> publish_checkpoint.make_row() + merge_manifest() (dry-run)
+    synthetic uint16 dataset
+      -> real training loop
+      -> Dee's CheckpointManager
+      -> split safetensors training checkpoint
+      -> direct run_eval.load_model()
+      -> safetensors inference export
+      -> validation loss and perplexity
+      -> held-out prompt generation
+      -> optional ONNX export
+      -> benchmark manifest dry-run preview
+
+No temporary combined PyTorch checkpoint is created.
 
 No GPU, network, GPT-2 weights, or benchmark downloads required.
 
-Official HellaSwag/LAMBADA values are mocked solely to exercise
-the publication schema. No benchmark scores are published.
+HellaSwag and LAMBADA values are MOCKED solely to test the
+publication schema. They are never published as real scores.
 
 Run:
     pytest -q tests/test_e2e_tiny.py
@@ -24,6 +27,7 @@ Run:
 from __future__ import annotations
 
 import copy
+import importlib.util
 import json
 import math
 from pathlib import Path
@@ -52,6 +56,7 @@ from evals.publish_checkpoint import (
     write_json_atomic,
 )
 
+
 MODEL_CONFIG = {
     "vocab_size": 128,
     "n_layers": 2,
@@ -72,18 +77,19 @@ TRAIN_CONFIG = {
 
 
 class TinyTokenizer:
-    """Deterministic ASCII tokenizer for offline integration tests.
+    """Deterministic ASCII tokenizer for offline smoke tests.
 
-    This is deliberately NOT GPT-2 BPE. It only tests the evaluator's
-    tokenizer interface without downloading tokenizer assets.
-    All IDs fit inside the tiny model's 128-token vocabulary.
+    Deliberately not GPT-2 BPE. Tests the tokenizer interface
+    without requiring downloads. All IDs fit the tiny model.
     """
 
     eot_token_id = 127
 
     def encode(self, text: str) -> list[int]:
         if any(ord(char) >= 127 for char in text):
-            raise ValueError("TinyTokenizer supports ASCII only")
+            raise ValueError(
+                "TinyTokenizer supports ASCII only"
+            )
         return [ord(char) for char in text]
 
     def decode(self, ids: list[int]) -> str:
@@ -93,8 +99,11 @@ class TinyTokenizer:
 def write_synthetic_data(
     directory: Path,
 ) -> tuple[Path, Path]:
-    """Create small deterministic training/validation token files."""
-    directory.mkdir(parents=True, exist_ok=True)
+    """Create deterministic training and validation token files."""
+    directory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     rng = np.random.default_rng(2026)
 
@@ -124,42 +133,12 @@ def write_synthetic_data(
     return train_path, val_path
 
 
-def make_training_checkpoint(
-    training_weights: Path,
-    destination: Path,
-    *,
-    config: dict,
-) -> Path:
-    """Bridge Dee's split checkpoint format to run_eval's loader.
-
-    The training manager saves:
-        step_XXXXXXXX.safetensors
-        step_XXXXXXXX_state.pt
-
-    The current evaluation loader accepts:
-        {"model": state_dict, "config": model_kwargs}
-
-    This temporary artifact contains exactly those keys.
-    """
-    weights = safetensors.load_file(str(training_weights))
-
-    torch.save(
-        {
-            "model": weights,
-            "config": dict(config),
-        },
-        destination,
-    )
-
-    return destination
-
-
 def make_mock_benchmark_reports():
-    """Synthetic metrics for testing publication contracts ONLY.
+    """Synthetic benchmark fixtures for schema testing ONLY.
 
-    The official benchmark counts are deliberately supplied here
-    because make_row() requires complete reports. These values
-    are fabricated test fixtures, not evaluation measurements.
+    These values are fabricated, not measured benchmark scores.
+    The official counts are present because make_row() requires
+    complete reports.
     """
     hellaswag = {
         "dataset": "MOCK_HELLASWAG",
@@ -187,25 +166,25 @@ def make_mock_benchmark_reports():
 
 
 def test_tiny_checkpoint_end_to_end(tmp_path: Path):
-    """Train, checkpoint, evaluate, export and dry-run publication."""
+    """Train, save, reload, evaluate, export and preview."""
     torch.manual_seed(2026)
     torch.set_num_threads(1)
 
-    # ---------------------------------------------------------------
-    # 1. Generate synthetic training and validation datasets.
-    # ---------------------------------------------------------------
+    # ------------------------------------------------------------
+    # 1. Generate synthetic training and validation data.
+    # ------------------------------------------------------------
     data_dir = tmp_path / "data"
 
     train_bin, val_bin = write_synthetic_data(
         data_dir
     )
 
-    assert train_bin.exists()
-    assert val_bin.exists()
+    assert train_bin.is_file()
+    assert val_bin.is_file()
 
-    # ---------------------------------------------------------------
-    # 2. Construct Codex's real PlaygroundLM architecture.
-    # ---------------------------------------------------------------
+    # ------------------------------------------------------------
+    # 2. Construct the actual PlaygroundLM architecture.
+    # ------------------------------------------------------------
     model = PlaygroundLM(**MODEL_CONFIG).cpu()
 
     optimizer = torch.optim.AdamW(
@@ -231,9 +210,9 @@ def test_tiny_checkpoint_end_to_end(tmp_path: Path):
         drop_last=False,
     )
 
-    # ---------------------------------------------------------------
-    # 3. Train with the actual train_loop for three CPU updates.
-    # ---------------------------------------------------------------
+    # ------------------------------------------------------------
+    # 3. Train with the real training loop for three CPU updates.
+    # ------------------------------------------------------------
     run_dir = tmp_path / "run"
 
     manager = CheckpointManager(
@@ -264,8 +243,8 @@ def test_tiny_checkpoint_end_to_end(tmp_path: Path):
     metrics_path = run_dir / "metrics.jsonl"
     training_manifest_path = run_dir / "manifest.json"
 
-    assert metrics_path.exists()
-    assert training_manifest_path.exists()
+    assert metrics_path.is_file()
+    assert training_manifest_path.is_file()
 
     metrics = [
         json.loads(line)
@@ -276,7 +255,6 @@ def test_tiny_checkpoint_end_to_end(tmp_path: Path):
     assert [row["step"] for row in metrics] == [
         1, 2, 3
     ]
-
     assert all(
         math.isfinite(row["loss"])
         for row in metrics
@@ -287,12 +265,12 @@ def test_tiny_checkpoint_end_to_end(tmp_path: Path):
     )
 
     assert training_manifest["latest_step"] == 3
+    assert training_manifest["config"]["model"] == MODEL_CONFIG
 
     entries = manager.list_checkpoints()
     assert entries
 
     last_checkpoint = entries[-1]
-
     assert last_checkpoint.step == 3
 
     weights_path = run_dir / last_checkpoint.path
@@ -303,22 +281,20 @@ def test_tiny_checkpoint_end_to_end(tmp_path: Path):
     )
 
     assert weights_path.is_file()
+    assert weights_path.suffix == ".safetensors"
     assert state_path.is_file()
 
-    # ---------------------------------------------------------------
-    # 4. Convert the real saved weights into the eval-loader format.
-    # ---------------------------------------------------------------
-    combined_path = make_training_checkpoint(
-        weights_path,
-        tmp_path / "tiny_eval.pt",
-        config=MODEL_CONFIG,
-    )
-
-    assert combined_path.is_file()
-
+    # ------------------------------------------------------------
+    # 4. Load Dee's split safetensors checkpoint DIRECTLY.
+    #
+    # The loader discovers model kwargs from:
+    #     run/manifest.json -> config["model"]
+    #
+    # No conversion or temporary combined .pt file is needed.
+    # ------------------------------------------------------------
     loaded_model = load_model(
         "playground",
-        str(combined_path),
+        str(weights_path),
         device="cpu",
         factory="playground_lm.model:PlaygroundLM",
     )
@@ -326,10 +302,9 @@ def test_tiny_checkpoint_end_to_end(tmp_path: Path):
     assert isinstance(loaded_model, PlaygroundLM)
     assert loaded_model.context_len == 64
     assert loaded_model.vocab_size == 128
+    assert not loaded_model.training
 
-    loaded_model.eval()
-
-    # Verify that the checkpoint preserved the trained parameters.
+    # Confirm that the checkpoint preserved trained parameters.
     for original, restored in zip(
         model.parameters(),
         loaded_model.parameters(),
@@ -339,28 +314,50 @@ def test_tiny_checkpoint_end_to_end(tmp_path: Path):
             restored.detach(),
         )
 
-    # ---------------------------------------------------------------
-    # 5. Exercise the existing safetensors export pipeline.
-    # ---------------------------------------------------------------
+    # Check numerical predictions as well as parameter equality.
+    probe_ids = torch.tensor(
+        [[1, 2, 3, 4]],
+        dtype=torch.long,
+    )
+
+    with torch.inference_mode():
+        model.eval()
+        original_logits, _ = model(probe_ids)
+        restored_logits, _ = loaded_model(probe_ids)
+
+    torch.testing.assert_close(
+        original_logits,
+        restored_logits,
+    )
+
+    # ------------------------------------------------------------
+    # 5. Export the same original safetensors checkpoint.
+    #
+    # export_checkpoint() now understands Dee's split format,
+    # using the same config discovery as run_eval.load_model().
+    # ------------------------------------------------------------
     export_dir = tmp_path / "weights_export"
 
     export_manifest = export_checkpoint(
-        combined_path,
+        weights_path,
         export_dir,
     )
 
     exported_weights = (
         export_dir / "model.safetensors"
     )
-
     exported_manifest = (
         export_dir / "manifest.json"
     )
 
-    assert exported_weights.exists()
-    assert exported_manifest.exists()
-
+    assert exported_weights.is_file()
+    assert exported_manifest.is_file()
     assert export_manifest["tensor_count"] > 0
+
+    assert (
+        export_manifest["model_config"]
+        == MODEL_CONFIG
+    )
 
     exported_state = safetensors.load_file(
         str(exported_weights)
@@ -368,9 +365,21 @@ def test_tiny_checkpoint_end_to_end(tmp_path: Path):
 
     assert "token_embedding.weight" in exported_state
 
-    # ---------------------------------------------------------------
-    # 6. Run the real held-out validation loss/perplexity path.
-    # ---------------------------------------------------------------
+    original_state = safetensors.load_file(
+        str(weights_path)
+    )
+
+    assert set(exported_state) == set(original_state)
+
+    for name, tensor in original_state.items():
+        torch.testing.assert_close(
+            tensor,
+            exported_state[name],
+        )
+
+    # ------------------------------------------------------------
+    # 6. Run the real validation loss/perplexity evaluator.
+    # ------------------------------------------------------------
     validation = validation_metrics(
         loaded_model,
         val_bin,
@@ -392,9 +401,9 @@ def test_tiny_checkpoint_end_to_end(tmp_path: Path):
         rel=1e-5,
     )
 
-    # ---------------------------------------------------------------
-    # 7. Run real eval-prompt generation with an offline tokenizer.
-    # ---------------------------------------------------------------
+    # ------------------------------------------------------------
+    # 7. Run held-out generation with an offline tokenizer.
+    # ------------------------------------------------------------
     prompts_path = tmp_path / "prompts.json"
 
     prompts_path.write_text(
@@ -446,9 +455,7 @@ def test_tiny_checkpoint_end_to_end(tmp_path: Path):
         for ids in token_lists
     )
 
-    evaluation_path = (
-        tmp_path / "eval_results.json"
-    )
+    evaluation_path = tmp_path / "eval_results.json"
 
     write_json_atomic(
         evaluation_path,
@@ -469,15 +476,14 @@ def test_tiny_checkpoint_end_to_end(tmp_path: Path):
 
     assert evaluation_report["validation"]["complete"]
 
-    # ---------------------------------------------------------------
+    # ------------------------------------------------------------
     # 8. Export ONNX if dependencies are installed.
-    # ---------------------------------------------------------------
+    #
+    # Pass the ORIGINAL safetensors checkpoint for provenance.
+    # ------------------------------------------------------------
     onnx_available = (
-        __import__("importlib").util.find_spec("onnx")
-        is not None
-        and __import__("importlib").util.find_spec(
-            "onnxruntime"
-        ) is not None
+        importlib.util.find_spec("onnx") is not None
+        and importlib.util.find_spec("onnxruntime") is not None
     )
 
     if onnx_available:
@@ -488,38 +494,35 @@ def test_tiny_checkpoint_end_to_end(tmp_path: Path):
         onnx_manifest = export_bundle(
             loaded_model,
             onnx_dir,
-            checkpoint=combined_path,
+            checkpoint=weights_path,
             context_len=64,
             vocab_size=128,
             sample_length=4,
             quantize=False,
         )
 
-        assert (
-            onnx_dir / "model.onnx"
-        ).is_file()
-
-        assert (
-            onnx_dir / "manifest.json"
-        ).is_file()
+        assert (onnx_dir / "model.onnx").is_file()
+        assert (onnx_dir / "manifest.json").is_file()
 
         assert (
             onnx_manifest["artifacts"]["fp32"]
             ["validation"]["passed"]
         )
-
         assert (
             onnx_manifest["tokenizer"]["vocab_size"]
             == 128
         )
+        assert (
+            "checkpoint_sha256" in onnx_manifest
+        )
 
-    # ---------------------------------------------------------------
-    # 9. Exercise publish_checkpoint's schema in DRY-RUN mode.
+    # ------------------------------------------------------------
+    # 9. Preview benchmark publication in memory.
     #
-    # No official benchmark dataset is downloaded.
-    # No production manifest is written.
-    # The benchmark figures are ONLY synthetic test fixtures.
-    # ---------------------------------------------------------------
+    # These are MOCKED benchmark fixtures.
+    # No official HellaSwag/LAMBADA run happens here.
+    # No production manifest is modified.
+    # ------------------------------------------------------------
     hellaswag, lambada = make_mock_benchmark_reports()
 
     preview_row = make_row(
@@ -547,8 +550,6 @@ def test_tiny_checkpoint_end_to_end(tmp_path: Path):
 
     original = copy.deepcopy(demo_manifest)
 
-    # merge_manifest is the pure in-memory portion of publication.
-    # It cannot write to the production manifest.
     preview_manifest = merge_manifest(
         demo_manifest,
         preview_row,
@@ -560,17 +561,14 @@ def test_tiny_checkpoint_end_to_end(tmp_path: Path):
     ) == 1
 
     assert (
-        preview_manifest["benchmarks"]["rows"][0]
-        ["id"] == "e2e-tiny"
+        preview_manifest["benchmarks"]["rows"][0]["id"]
+        == "e2e-tiny"
+    )
+    assert preview_row["val_loss"] == pytest.approx(
+        validation["loss"]
     )
 
-    assert (
-        preview_row["val_loss"]
-        == pytest.approx(validation["loss"])
-    )
-
-    # Save the dry-run preview inside pytest's temporary directory.
-    # It is never uploaded or treated as an official result.
+    # A local test artifact, explicitly marked non-publishable.
     preview_path = (
         tmp_path / "publication_dry_run.json"
     )
@@ -595,20 +593,28 @@ def test_tiny_checkpoint_end_to_end(tmp_path: Path):
     assert preview["mocked_benchmarks"] is True
     assert preview["publishable"] is False
 
-    # Final integration artifact checks.
+    # ------------------------------------------------------------
+    # 10. Confirm every expected pipeline artifact exists.
+    #
+    # Notice there is NO combined_path / tiny_eval.pt.
+    # ------------------------------------------------------------
+    expected_files = (
+        train_bin,
+        val_bin,
+        metrics_path,
+        training_manifest_path,
+        weights_path,
+        state_path,
+        exported_weights,
+        exported_manifest,
+        evaluation_path,
+        preview_path,
+    )
+
     assert all(
         path.is_file()
-        for path in (
-            train_bin,
-            val_bin,
-            metrics_path,
-            training_manifest_path,
-            weights_path,
-            state_path,
-            combined_path,
-            exported_weights,
-            exported_manifest,
-            evaluation_path,
-            preview_path,
-        )
+        for path in expected_files
     )
+
+    # No conversion artifact should exist.
+    assert not (tmp_path / "tiny_eval.pt").exists()
