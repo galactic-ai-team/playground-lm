@@ -1,37 +1,145 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PlaygroundLM: watch it learn</title>
-<link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PlaygroundLM — From-Scratch Transformer Demo</title>
+  <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-<main>
-  <h1>PlaygroundLM</h1>
-  <p class="sub">A GPT-2-small-size model built from scratch by the AI Playground team.</p>
+  <div class="bg-grid"></div>
 
-  <section id="ckpt">
-    <label for="slider">Training checkpoint: <span id="ckpt-label">none yet</span></label>
-    <input id="slider" type="range" min="0" max="0" value="0" disabled>
-  </section>
-
-  <section id="prompt">
-    <label for="prompt-input">Prompt</label>
-    <textarea id="prompt-input" rows="3" placeholder="Type a prompt..."></textarea>
-    <div class="row">
-      <button id="generate" disabled>Generate</button>
-      <button id="riddle" disabled>New riddle</button>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo-orb">🛸</span>
+      <div>
+        <h1><span id="model-title">PlaygroundLM</span> <span class="badge" id="model-badge">Loading manifest...</span></h1>
+        <p class="subtitle">Galactic AI Team · From-Scratch GPT-2-Small Class Model · Measured Checkpoints Only</p>
+      </div>
     </div>
-    <pre id="output" aria-live="polite"></pre>
-  </section>
+    <div class="runtime-status" id="runtime-pill">
+      <span class="dot" id="runtime-dot"></span>
+      <span id="runtime-label">Checking WebGPU / ONNX Runtime...</span>
+    </div>
+  </header>
 
-  <section id="bench">
-    <h2>Benchmarks</h2>
-    <table id="bench-table"><thead></thead><tbody></tbody></table>
-    <p id="bench-empty">No results yet. Training hasn't started.</p>
-  </section>
-</main>
-<script type="module" src="app.js"></script>
+  <main class="cockpit">
+    <!-- Left Column: Checkpoint Selector + Real ONNX Inference -->
+    <section class="panel main-panel">
+      <div class="section-head">
+        <h2>1. Checkpoint Selector</h2>
+        <span class="mono-tag" id="ckpt-url-tag">manifest.json</span>
+      </div>
+      <p class="muted">Select a trained checkpoint from <code>demo/manifest.json</code> to mount in-browser via ONNX Runtime Web.</p>
+
+      <div id="ckpt-empty-state" class="empty-banner">
+        <strong>No trained checkpoints yet.</strong> Waiting for Kaggle training runs to populate <code>checkpoints[]</code> in <code>demo/manifest.json</code>.
+      </div>
+
+      <div id="ckpt-controls" class="slider-box hidden">
+        <input type="range" id="ckpt-slider" min="0" max="0" step="1" value="0" aria-label="Checkpoint Step" />
+        <div class="slider-labels" id="ckpt-stage-buttons"></div>
+      </div>
+
+      <div class="ckpt-meta">
+        <div>
+          <span class="k">Model</span>
+          <span class="v" id="meta-model">—</span>
+        </div>
+        <div>
+          <span class="k">Step</span>
+          <span class="v" id="meta-step">—</span>
+        </div>
+        <div>
+          <span class="k">Tokens Seen</span>
+          <span class="v" id="meta-tokens">—</span>
+        </div>
+        <div>
+          <span class="k">ONNX Session</span>
+          <span class="v" id="meta-session">Not mounted</span>
+        </div>
+      </div>
+
+      <hr class="divider" />
+
+      <div class="section-head">
+        <h2>2. In-Browser ONNX Inference (<code>input_ids</code> → <code>logits</code>)</h2>
+        <div class="preset-row">
+          <button class="chip" id="btn-riddle" disabled title="Populated from manifest.json riddle_prompts">🧩 Riddle Prompt</button>
+          <button class="chip" id="btn-toggle-custom-onnx">📦 Mount Custom .onnx URL</button>
+        </div>
+      </div>
+
+      <div id="onnx-url-bar" class="onnx-url-bar hidden">
+        <input type="url" id="onnx-url-input" placeholder="https://.../checkpoint.onnx (for testing exported weights directly)" />
+        <button class="btn-secondary" id="btn-fetch-onnx">Load ONNX</button>
+      </div>
+
+      <label class="field-label" for="prompt-input">Prompt</label>
+      <textarea id="prompt-input" rows="3" placeholder="Enter a prompt once a checkpoint is mounted..."></textarea>
+
+      <div class="controls-row">
+        <div class="param-control">
+          <label for="temp-slider">Temp: <b id="temp-val">0.80</b></label>
+          <input type="range" id="temp-slider" min="0.1" max="1.5" step="0.05" value="0.80" />
+        </div>
+        <div class="param-control">
+          <label for="topk-slider">Top-K: <b id="topk-val">40</b></label>
+          <input type="range" id="topk-slider" min="1" max="100" step="1" value="40" />
+        </div>
+        <div class="param-control">
+          <label for="max-tokens-slider">Max New Tokens: <b id="max-tokens-val">48</b></label>
+          <input type="range" id="max-tokens-slider" min="8" max="128" step="8" value="48" />
+        </div>
+        <div class="action-buttons">
+          <button class="btn-primary" id="btn-generate" disabled>⚡ Generate (ONNX)</button>
+          <button class="btn-secondary" id="btn-stop" disabled>⏹ Stop</button>
+        </div>
+      </div>
+
+      <div class="output-header">
+        <span>Model Output <small class="muted" id="tokenizer-status">(awaiting checkpoint &amp; tokenizer)</small></span>
+        <span class="tok-speed" id="tok-speed">— tok/s</span>
+      </div>
+      <div class="output-stream" id="output-stream" aria-live="polite">
+        <span class="muted">Mount a trained ONNX checkpoint to run live forward passes in your browser.</span>
+      </div>
+    </section>
+
+    <!-- Right Column: Measured Logit Distribution + Manifest Benchmark Table -->
+    <aside class="side-col">
+      <section class="panel">
+        <div class="section-head">
+          <h2>🔍 Top-5 Next-Token Logits</h2>
+          <span class="mono-tag" id="inspected-token-tag">no active session</span>
+        </div>
+        <p class="muted">Live softmax probabilities extracted directly from the ONNX <code>logits</code> output tensor (click any generated token to inspect its step):</p>
+        <div class="logit-bars" id="logit-bars">
+          <div class="empty-banner">No logits computed yet — requires an active ONNX forward pass.</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="section-head">
+          <h2>📊 Measured Benchmark Results</h2>
+          <span class="mono-tag">manifest.json</span>
+        </div>
+        <p class="muted">Populated strictly from <code>benchmarks.columns</code> and <code>benchmarks.rows</code> in <code>demo/manifest.json</code>.</p>
+
+        <div id="bench-empty-state" class="empty-banner">
+          <strong>Not evaluated yet.</strong> <code>benchmarks.rows</code> in <code>demo/manifest.json</code> is currently empty. Scores will appear here once eval runs complete.
+        </div>
+
+        <div class="table-wrap hidden" id="bench-table-wrap">
+          <table class="bench-table" id="bench-table">
+            <thead id="bench-thead"></thead>
+            <tbody id="bench-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <script type="module" src="./app.js"></script>
 </body>
 </html>
