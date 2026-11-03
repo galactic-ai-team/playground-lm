@@ -1,0 +1,25 @@
+{
+  "id": "galacticaiteam/plm-stage-c-train",
+  "title": "PLM Stage C Train",
+  "code_file": "stage_c_train.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [],
+  "kernel_sources": [
+    "galacticaiteam/plm-stage-c-data-prep-s0",
+    "galacticaiteam/plm-stage-c-data-prep-s1",
+    "galacticaiteam/plm-stage-c-data-prep-s2",
+    "galacticaiteam/plm-stage-c-data-prep-s3",
+    "galacticaiteam/plm-stage-c-data-prep-s4",
+    "galacticaiteam/plm-stage-c-data-prep-s5",
+    "galacticaiteam/plm-stage-c-data-prep-s6",
+    "galacticaiteam/plm-stage-c-data-prep-s7",
+    "galacticaiteam/plm-stage-b-launch",
+    "galacticaiteam/plm-stage-c-train"
+  ],
+  "competition_sources": [],
+  "model_sources": []
+}
