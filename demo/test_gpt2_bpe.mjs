@@ -41,22 +41,25 @@ function buildRealGPT2Fixture() {
   vocab['w'] = 86;
   vocab['Ġ'] = 220;
 
-  // Intermediate and final merged tokens with exact OpenAI GPT-2 IDs
-  vocab['ll'] = 297;
-  vocab['He'] = 1544;
-  vocab['Hell'] = 19097;
-  vocab['Hello'] = 15496;
-
+  // Exact OpenAI GPT-2 IDs for all merged tokens present in mergesText
+  vocab['Ġt'] = 256;
+  vocab['Ġa'] = 257;
+  vocab['he'] = 258;
+  vocab['in'] = 259;
+  vocab['re'] = 260;
+  vocab['on'] = 261;
   vocab['Ġw'] = 266;
   vocab['or'] = 273;
-  vocab['Ġwor'] = 9855;
-  vocab['ld'] = 300;
-  vocab['Ġworld'] = 995;
-
   vocab['Ġd'] = 288;
-  vocab['on'] = 261;
-  vocab['Ġdon'] = 836;
+  vocab['ll'] = 297;
+  vocab['ld'] = 300;
   vocab["'t"] = 470;
+  vocab['Ġdon'] = 836;
+  vocab['Ġworld'] = 995;
+  vocab['He'] = 1544;
+  vocab['Ġwor'] = 9855;
+  vocab['Hello'] = 15496;
+  vocab['Hell'] = 19097;
 
   vocab[GPT2_EOT_TOKEN] = GPT2_EOT_ID;
 
