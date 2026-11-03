@@ -28,6 +28,7 @@ CHARS_PER_TOKEN = 4.0
 
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _SPACES = re.compile(r"[ \t]+")
+_LINE_EDGES = re.compile(r"[ \t]*\n[ \t]*")
 _BLANKS = re.compile(r"\n{3,}")
 
 
@@ -48,14 +49,16 @@ def clean_text(text: str, *, min_chars: int = 1, max_chars: int = 200_000) -> st
     """Light, lossless-ish cleaning. Returns None if the doc is rejected.
 
     NFC-normalizes, strips control characters (keeping \\n and \\t),
-    collapses runs of spaces and 3+ blank lines, trims. Does NOT
-    lowercase or alter wording — the model trains on what this returns.
+    collapses runs of spaces, trims spaces at line edges, collapses 3+
+    blank lines, trims. Does NOT lowercase or alter wording — the model
+    trains on what this returns.
     """
     if not isinstance(text, str):
         return None
     text = unicodedata.normalize("NFC", text)
     text = _CTRL.sub("", text)
     text = _SPACES.sub(" ", text)
+    text = _LINE_EDGES.sub("\n", text)
     text = _BLANKS.sub("\n\n", text)
     text = text.strip()
     if len(text) < min_chars or len(text) > max_chars:

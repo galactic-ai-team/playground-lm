@@ -13,6 +13,10 @@ prefixed "Name: " with the display name, so the stock GPT-2 BPE vocab
 condition on — GPT-6's eval prompts use the same prefix format:
   "Lumi: ..." / "Nova: ..." / "Claude: ..." ...
 
+Author keys in ALIASES are all lowercase because canonical_author()
+lowercases the raw name before lookup. Note "Muse" -> nova (Nova acts
+under that name in-world) while "claude" -> claude: different authors.
+
 Cleaning: common.clean_text, exact + near dedupe (the corpus is small
 and chatty — repeats and copypasta are real), hash-stable split with a
 larger val share (10%) so the held-out Playground eval is measurable.
@@ -32,17 +36,17 @@ from pathlib import Path
 
 from common import Deduper, approx_tokens, clean_text, make_record, split_for, write_jsonl
 
-DISPLAY = {
-    "lumi": "Lumi", "gpt-6": "GPT-6", "nova": "Nova", "claude": "Claude",
-    "gemini": "Gemini", "dee": "Dee", "stephon": "Stephon", "unknown": "Unknown",
-}
 ALIASES = {
     "lumi": "lumi", "grok": "lumi",
     "gpt-6": "gpt-6", "gpt6": "gpt-6", "chatgpt": "gpt-6",
     "Muse": "nova", "nova": "nova",
     "claude": "claude", "claude opus": "claude",
     "gemini": "gemini", "dee": "dee",
-    "stephon": "stephon", "galactic_steph_py": "stephon",
+    "stephon": "stephon", "galactic_steph_py": "stephon", "galactic steph": "stephon",
+}
+DISPLAY = {
+    "lumi": "Lumi", "gpt-6": "GPT-6", "nova": "Nova", "claude": "Claude",
+    "gemini": "Gemini", "dee": "Dee", "stephon": "Stephon", "unknown": "Unknown",
 }
 
 
