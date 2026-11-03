@@ -1,9 +1,12 @@
 # src/playground_lm/train/test_data.py
 # Tests for the dataloader.
 #
-# Two distinct semantics under test:
+# Two distinct stride semantics under test:
 #   - stride=1 (train): every token position is a start; adjacent windows overlap.
 #   - stride=context_len (eval): non-overlapping; each token in exactly one batch.
+#
+# Valid starts are in [0, num_tokens - context_len - 1] inclusive, because each
+# sample needs context_len+1 tokens (context_len inputs + 1 target offset).
 
 import tempfile
 from pathlib import Path
@@ -58,8 +61,7 @@ def test_raises_on_bad_stride():
 
 
 def test_x_y_alignment_stride_1():
-    """Train mode (stride=1): starts advance by 1, windows overlap.
-    y is x shifted left by 1 token — the fundamental invariant."""
+    """Train mode (stride=1): starts advance by 1, windows overlap."""
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "seq.bin"
         _write_tokens(p, list(range(20)))
@@ -73,7 +75,6 @@ def test_x_y_alignment_stride_1():
         assert x.shape == (2, 4)
         assert y.shape == (2, 4)
 
-        # stride=1 sequential: x[0] = [0,1,2,3], x[1] = [1,2,3,4].
         assert x[0].tolist() == [0, 1, 2, 3]
         assert y[0].tolist() == [1, 2, 3, 4]
         assert x[1].tolist() == [1, 2, 3, 4]
@@ -88,7 +89,6 @@ def test_x_y_alignment_stride_context_len():
         loader = build_dataloader(p, context_len=4, batch_size=2, shuffle=False)
 
         x, y = next(loader)
-        # stride=4 sequential: x[0] = [0,1,2,3], x[1] = [4,5,6,7].
         assert x[0].tolist() == [0, 1, 2, 3]
         assert y[0].tolist() == [1, 2, 3, 4]
         assert x[1].tolist() == [4, 5, 6, 7]
@@ -127,24 +127,43 @@ def test_infinite_iterator():
         loader = build_dataloader(p, 4, 2, shuffle=False, stride=1)
 
         for _ in range(20):
-            x, y = next(loader)
+            x, _ = next(loader)
             assert x.shape == (2, 4)
 
 
-def test_eval_loader_no_shuffle_uses_all_tokens():
-    """With stride=context_len, sequential iteration visits every token
-    exactly once over enough batches — no overlap, no gaps."""
+def test_eval_loader_respects_token_boundary():
+    """With 16 tokens and context_len=4, valid starts are 0, 4, 8 � not 12.
+
+    Start 12 would need y = tokens[13..16], but index 16 doesn't exist. The
+    last valid start is num_tokens - context_len - 1 = 11, so the highest
+    stride-aligned start is 8."""
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "seq.bin"
-        _write_tokens(p, list(range(16)))  # 16 tokens, ctx 4 -> starts 0,4,8,12
+        _write_tokens(p, list(range(16)))
         loader = build_dataloader(
             p, context_len=4, batch_size=4, shuffle=False, drop_last=False,
         )
 
         x, _ = next(loader)
-        # Should have exactly the 4 non-overlapping starts.
+        starts = x[:, 0].tolist()
+        assert starts == [0, 4, 8]
+
+
+def test_eval_loader_uses_last_valid_start_when_available():
+    """With 17 tokens and context_len=4, start 12 IS valid: y reaches
+    tokens[16], the last index. Non-overlapping starts are 0, 4, 8, 12."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "seq.bin"
+        _write_tokens(p, list(range(17)))
+        loader = build_dataloader(
+            p, context_len=4, batch_size=4, shuffle=False, drop_last=False,
+        )
+
+        x, y = next(loader)
         starts = x[:, 0].tolist()
         assert starts == [0, 4, 8, 12]
+        # Confirm y for the last start reaches the last token (index 16).
+        assert y[3].tolist() == [13, 14, 15, 16]
 
 
 def test_train_loader_with_stride_1_covers_every_position():
@@ -158,7 +177,7 @@ def test_train_loader_with_stride_1_covers_every_position():
         )
 
         seen_starts = set()
-        for _ in range(3):  # 12 valid starts / batch 4 = 3 batches
+        for _ in range(3):
             x, _ = next(loader)
             for row in x:
                 seen_starts.add(int(row[0].item()))
