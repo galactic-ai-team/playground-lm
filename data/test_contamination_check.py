@@ -73,5 +73,5 @@ def test_hellaswag_loader_indexes_ctx_and_endings(tmp_path):
         "endings": ["and eats.", "and sleeps."],
     }) + "\n")
     items = load_items("hellaswag", p)
-    assert [i for i, _ in items] == ["7", "7", "7"]
+    assert [i for i, _ in items] == ["0", "0", "0"]
     assert items[1][1] == "A man is sitting and eats."

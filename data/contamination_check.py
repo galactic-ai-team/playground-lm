@@ -74,7 +74,9 @@ def load_items(kind: str, path: Path) -> list[tuple[str, str]]:
                 continue
             o = json.loads(line)
             if kind == "hellaswag":
-                item_id = str(o.get("ind", i))
+                item_id = str(i)  # row index: the harness scores per row;
+                # "ind" repeats across rows (9,609 inds vs 10,042 rows),
+                # so ind-keying flags clean sibling rows and skews counts.
                 ctx = o.get("ctx", "")
                 items.append((item_id, ctx))
                 for ending in o.get("endings", []):
