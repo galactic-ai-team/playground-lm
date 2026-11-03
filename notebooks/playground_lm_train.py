@@ -1,27 +1,57 @@
-# notebooks/playground_lm_train.ipynb  (as a .py script — Colab/Kaggle can run
-# a .ipynb, but this .py version is easier to diff in the repo. Run with
-# `python notebooks/playground_lm_train.py` after installing deps.)
-#
+# notebooks/playground_lm_train.py
 # Kaggle/Colab training entry point for PlaygroundLM.
 #
-# - Loads data paths from env vars (set in the notebook UI, not hardcoded).
-# - Instantiates the model via train/model.py (Claude's lane).
-# - Instantiates the tokenizer via train/tokenizer.py (GPT-6's lane).
-# - Drives the training loop with checkpointing via train/checkpoint.py.
-# - On session end, calls train/upload_release.py.
+# This file is the single source of truth for the training notebook. The
+# committed .ipynb is generated from it by scripts/make_notebook.py (Jupytext-
+# style `# %%` markers); CI runs `make_notebook.py --check` to fail if the two
+# drift apart.
 #
-# This file is deliberately thin: it wires Claude's model+loop to my
-# checkpoint manager and release upload, so any changes to the model/loop go in
-# Claude's files, and any changes to checkpoint policy go in train/checkpoint.py.
+# ---
+#
+# Run this on Kaggle (or Colab) as:
+#   1. Attach the PlaygroundLM data as a Kaggle dataset.
+#   2. Set the env vars in the "Config" cell (or via Kaggle secrets).
+#   3. Run all cells.
+#
+# The training loop lives in train/loop.py (Claude's lane). This notebook
+# imports it and drives it with checkpointing (my lane) and dataset loading
+# (Nova's + my dataloader).
 
+# %% [markdown]
+# # PlaygroundLM training
+#
+# From-scratch GPT-2-small-class model (124M params, 12 layers, 12 heads,
+# 768 dims, 1024 context) trained on FineWeb-Edu + Playground text.
+#
+# Free-tools only: Kaggle P100 or T4, checkpointed to a local run dir,
+# uploaded to a GitHub release via `gh`.
+#
+# See `README.md` for the full plan and eval setup.
+
+# %% [markdown]
+# ## Config
+#
+# Set these before running the next cell:
+#
+# | Env var | Meaning | Default |
+# |---|---|---|
+# | `PLM_RUN_DIR` | Local checkpoint dir (survives within a session) | `/kaggle/working/runs/plm-001` |
+# | `PLM_DATA_DIR` | Directory with `train.bin`, `val.bin`, `tokenizer/` | `/kaggle/input/plm-data` |
+# | `PLM_REPO` | GitHub repo for release upload | `galactic-ai-team/playground-lm` |
+# | `PLM_RELEASE_TAG` | Release tag for checkpoints | `v0.1-checkpoints` |
+# | `PLM_RUN_ID` | Manifest run id | `plm-001` |
+#
+# `GH_TOKEN` must be set as a Kaggle secret with `repo` scope for the upload
+# step to work. Without it, training still runs; only checkpoint upload is
+# skipped (you'll see a warning).
+
+# %%
 import os
 import sys
 import time
 from pathlib import Path
 
 import torch
-
-# --- Config from env (set in the Kaggle/Colab notebook UI) ----------------
 
 RUN_DIR = Path(os.environ.get("PLM_RUN_DIR", "/kaggle/working/runs/plm-001"))
 DATA_DIR = Path(os.environ.get("PLM_DATA_DIR", "/kaggle/input/plm-data"))
@@ -31,7 +61,7 @@ RUN_ID = os.environ.get("PLM_RUN_ID", "plm-001")
 UPLOAD_EVERY_N_SAVES = int(os.environ.get("PLM_UPLOAD_EVERY", "4"))
 
 # Hyperparams mirror GPT-2 small (124M). Do not change without updating
-# train/model.py's defaults and the plan in the README.
+# model.py's defaults and the plan in README.md.
 CONFIG = {
     "vocab_size": 50257,
     "n_layers": 12,
@@ -46,192 +76,169 @@ CONFIG = {
     "grad_clip": 1.0,
 }
 
-# --- Imports from other lanes --------------------------------------------
-
+# Make the src/ package importable when running from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from playground_lm.train.checkpoint import CheckpointManager, DEFAULT_INTERVAL_S
-from playground_lm.model import PlaygroundLM        # Claude's lane
-from playground_lm.tokenizer import get_tokenizer   # GPT-6's lane
+# %% [markdown]
+# ## Imports from other lanes
+#
+# - `playground_lm.model.PlaygroundLM` (Claude): `forward(x, y=None) -> (logits, loss)`.
+# - `playground_lm.tokenizer.get_tokenizer()` (GPT-6): GPT-2 BPE via tiktoken.
+# - `playground_lm.train.data.build_dataloader` (mine): memmap'd uint16 token file.
+# - `playground_lm.train.checkpoint.CheckpointManager` (mine): save / resume / prune.
+# - `playground_lm.train.loop` (Claude): the training loop driver.
+
+# %%
+from playground_lm.model import PlaygroundLM
+from playground_lm.tokenizer import get_tokenizer
+from playground_lm.train.checkpoint import CheckpointManager
 from playground_lm.train.data import build_dataloader
+from playground_lm.train.loop import train as train_loop
+from playground_lm.train.upload_release import upload as upload_release
+
+# %% [markdown]
+# ## Device check
+#
+# Kaggle's free GPU is usually a P100 (16GB) or T4 (16GB). If neither is
+# available, training still runs on CPU — extremely slowly. A single batch
+# that takes ~0.2s on P100 takes ~15s on CPU.
+
+# %%
+device = "cuda" if torch.cuda.is_available() else "cpu"
+if device == "cpu":
+    print("[train] WARNING: no GPU. This will be extremely slow.")
+else:
+    print(f"[train] device: {torch.cuda.get_device_name(0)}")
+
+# %% [markdown]
+# ## Data
+#
+# Nova's data lane publishes three files under `PLM_DATA_DIR`:
+#
+# - `train.bin` — flat uint16 token IDs, all of FineWeb-Edu sample + Playground text
+# - `val.bin`   — held-out split, same format
+# - `tokenizer/` — cached GPT-2 BPE assets
+#
+# `build_dataloader` memory-maps the file, so the corpus can be larger than RAM.
+# Train uses `stride=1` (every position is a sample); val uses the default
+# `stride=context_len` (non-overlapping, unbiased loss estimate).
+
+# %%
+train_loader = build_dataloader(
+    DATA_DIR / "train.bin",
+    context_len=CONFIG["context_len"],
+    batch_size=CONFIG["batch_size"],
+    shuffle=True,
+    stride=1,
+)
+val_loader = build_dataloader(
+    DATA_DIR / "val.bin",
+    context_len=CONFIG["context_len"],
+    batch_size=CONFIG["batch_size"],
+    shuffle=False,   # stride defaults to context_len (eval mode)
+)
+
+# %% [markdown]
+# ## Model + optimizer
+#
+# `PlaygroundLM` is initialized from random init — no pretrained weights.
+
+# %%
+model = PlaygroundLM(**CONFIG).to(device)
+if device == "cuda":
+    model = torch.compile(model)
+optimizer = torch.optim.AdamW(
+    model.parameters(),
+    lr=CONFIG["lr"],
+    weight_decay=CONFIG["weight_decay"],
+    betas=(0.9, 0.95),
+)
+
+# %% [markdown]
+# ## Checkpoint manager
+#
+# Handles:
+# - Resume from the latest checkpoint if one exists in `RUN_DIR`.
+# - Save every ~30 min (via `interval_s`) and at milestone steps.
+# - Keep the last N rolling checkpoints + all milestones.
+# - Emit a `manifest.json` the release script and demo frontend read.
+
+# %%
+ckpt = CheckpointManager(
+    run_dir=RUN_DIR,
+    run_id=RUN_ID,
+    config=CONFIG,
+)
+
+start_step = 0
+if ckpt.resume(model, optimizer) is not None:
+    state = ckpt.resume(model, optimizer)
+    start_step = state["step"]
+    print(f"[train] resumed from step {start_step} ({state['tokens_seen']:,} tokens)")
+
+# %% [markdown]
+# ## Train
+#
+# Everything below is driven by `train_loop` from Claude's lane. The loop:
+# - Runs forward+backward with `grad_accum_steps` accumulation.
+# - Applies the LR schedule (linear warmup, cosine decay).
+# - Every N steps, checks `ckpt.should_save(step)` and saves if due.
+# - Every save, uploads to the GitHub release (every `UPLOAD_EVERY_N_SAVES` saves).
+# - Every 500 steps, computes val loss on 20 val batches.
+#
+# The loop returns when `max_steps` is reached or when the user interrupts.
+
+# %%
+def upload_hook(step: int, save_count: int) -> None:
+    """Called by train_loop after each save. Uploads every N saves."""
+    if save_count % UPLOAD_EVERY_N_SAVES != 0:
+        return
+    try:
+        upload_release(
+            run_dir=RUN_DIR,
+            repo=REPO,
+            tag=RELEASE_TAG,
+            gh_token=os.environ["GH_TOKEN"],
+        )
+    except KeyError:
+        print("[train] WARN: GH_TOKEN not set; skipping checkpoint upload")
+    except Exception as e:
+        # Upload failure should not kill training.
+        print(f"[train] WARN: upload failed: {e}")
 
 
-def main() -> None:
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    if device == "cpu":
-        print("[train] WARNING: no GPU. This will be extremely slow.")
-
-    # Data: Nova publishes tokenized shards. build_dataloader handles the
-    # memmap + batching so we don't load the whole corpus into RAM.
-    tokenizer = get_tokenizer()
-    train_loader = build_dataloader(
-        DATA_DIR / "train.bin",
-        context_len=CONFIG["context_len"],
-        batch_size=CONFIG["batch_size"],
-        stride=1,
-    )
-    val_loader = build_dataloader(
-        DATA_DIR / "val.bin",
-        context_len=CONFIG["context_len"],
-        batch_size=CONFIG["batch_size"],
-        shuffle=False,
-    )
-
-    # Model + optimizer.
-    model = PlaygroundLM(**CONFIG).to(device)
-    if device == "cuda":
-        model = torch.compile(model)
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=CONFIG["lr"],
-        weight_decay=CONFIG["weight_decay"],
-        betas=(0.9, 0.95),
-    )
-
-    # Checkpoint manager: handles resume + save + rotation + manifest.
-    ckpt = CheckpointManager(
-        run_dir=RUN_DIR,
-        run_id=RUN_ID,
-        config=CONFIG,
-    )
-
-    start_step = 0
-    tokens_seen = 0
-    wall_time = 0.0
-    resumed = ckpt.resume(model, optimizer)
-    if resumed is not None:
-        start_step = resumed["step"]
-        tokens_seen = resumed["tokens_seen"]
-        wall_time = resumed["wall_time_s"]
-        print(f"[train] resumed from step {start_step} ({tokens_seen:,} tokens)")
-
-    # Training loop. Everything about checkpoint policy lives in ckpt.
-    model.train()
-    step = start_step
-    session_start = time.time()
-    save_count = 0
-    for batch in cycle(train_loader):
-        if step >= 200_000:  # cap at ~200k steps for this run
-            break
-
-        t0 = time.time()
-
-        # LR schedule: linear warmup then cosine decay.
-        lr = lr_at_step(step, CONFIG)
-        for g in optimizer.param_groups:
-            g["lr"] = lr
-
-        # Gradient accumulation.
-        optimizer.zero_grad(set_to_none=True)
-        loss_accum = 0.0
-        for _ in range(CONFIG["grad_accum_steps"]):
-            x, y = next(batch)
-            x, y = x.to(device), y.to(device)
-            _, loss = model(x, y)
-            (loss / CONFIG["grad_accum_steps"]).backward()
-            loss_accum += loss.item() / CONFIG["grad_accum_steps"]
-            tokens_seen += x.numel()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), CONFIG["grad_clip"])
-        optimizer.step()
-        wall_time += time.time() - t0
-        step += 1
-
-        if step % 100 == 0:
-            print(
-                f"[train] step {step:>7}  loss {loss_accum:.4f}  "
-                f"lr {lr:.2e}  tok {tokens_seen:,}  "
-                f"dt {(time.time()-t0)/CONFIG['grad_accum_steps']:.3f}s/micro"
-            )
-
-        # Save if due (interval or milestone).
-        if ckpt.should_save(step):
-            ckpt.save(
-                model=model,
-                optimizer=optimizer,
-                step=step,
-                tokens_seen=tokens_seen,
-                wall_time_s=wall_time,
-            )
-            save_count += 1
-            print(f"[train] saved checkpoint at step {step}")
-
-            # Upload periodically (not on every save — that's wasteful on
-            # Kaggle where the session might die anyway; uploads on the last
-            # save of the session are what matter, but doing every N is safer
-            # against sudden session death).
-            if save_count % UPLOAD_EVERY_N_SAVES == 0:
-                upload_via_subprocess()
-
-        # Validation every 500 steps (cheap).
-        if step % 500 == 0:
-            model.eval()
-            with torch.no_grad():
-                vloss = sum(
-                    model(x.to(device), y.to(device))[1].item()
-                    for x, y in take(val_loader, 20)
-                ) / 20
-            print(f"[train] step {step}  val_loss {vloss:.4f}")
-            model.train()
-
-    # Final save + upload.
-    ckpt.save(
+try:
+    train_loop(
         model=model,
         optimizer=optimizer,
-        step=step,
-        tokens_seen=tokens_seen,
-        wall_time_s=wall_time,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        checkpoint_manager=ckpt,
+        config=CONFIG,
+        start_step=start_step,
+        max_steps=200_000,
+        device=device,
+        on_save=upload_hook,
     )
-    upload_via_subprocess()
-    print(f"[train] done. session wall time {time.time() - session_start:.0f}s")
+except KeyboardInterrupt:
+    print("[train] interrupted by user; last checkpoint saved")
+    raise
 
+# %% [markdown]
+# ## Final upload
+#
+# Make sure the last checkpoint is on the release even if the loop exited
+# between save points.
 
-# --- Helpers --------------------------------------------------------------
-
-def lr_at_step(step: int, cfg: dict) -> float:
-    if step < cfg["warmup_steps"]:
-        return cfg["lr"] * (step + 1) / cfg["warmup_steps"]
-    # Cosine decay to 10% of peak over 200k steps.
-    import math
-    progress = min(1.0, (step - cfg["warmup_steps"]) / (200_000 - cfg["warmup_steps"]))
-    return cfg["lr"] * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * progress)))
-
-
-def cycle(loader):
-    """Infinite batch iterator."""
-    while True:
-        for batch in loader:
-            yield batch
-
-
-def take(loader, n):
-    """Take first n items from an iterable."""
-    out = []
-    for i, item in enumerate(loader):
-        if i >= n:
-            break
-        out.append(item)
-    return out
-
-
-def upload_via_subprocess() -> None:
-    """Call train/upload_release.py as a subprocess so a network failure
-    there doesn't crash training."""
-    import subprocess
-    result = subprocess.run(
-        [
-            sys.executable, "-m", "playground_lm.train.upload_release",
-            "--run-dir", str(RUN_DIR),
-            "--repo", REPO,
-            "--tag", RELEASE_TAG,
-        ],
-        capture_output=True,
-        text=True,
+# %%
+try:
+    upload_release(
+        run_dir=RUN_DIR,
+        repo=REPO,
+        tag=RELEASE_TAG,
+        gh_token=os.environ["GH_TOKEN"],
     )
-    if result.returncode != 0:
-        print(f"[train] WARN: upload failed:\n{result.stderr}")
-    else:
-        print(f"[train] uploaded: {result.stdout.strip().splitlines()[-1]}")
-
-
-if __name__ == "__main__":
-    main()
+except KeyError:
+    print("[train] GH_TOKEN not set; final upload skipped")
+except Exception as e:
+    print(f"[train] final upload failed: {e}")
