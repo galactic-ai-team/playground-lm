@@ -1,0 +1,33 @@
+# .github/workflows/ci_notebook_check.yml
+# Fails if the committed notebooks/*.ipynb drifts from its .py source. Runs on
+# any push or PR that touches the notebook or the generator, and on main to
+# catch any drift that gets in.
+#
+# Regenerate locally with:
+#   python scripts/make_notebook.py
+
+name: Notebook freshness check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'notebooks/**'
+      - 'scripts/make_notebook.py'
+      - '.github/workflows/ci_notebook_check.yml'
+  pull_request:
+    paths:
+      - 'notebooks/**'
+      - 'scripts/make_notebook.py'
+      - '.github/workflows/ci_notebook_check.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check notebook freshness
+        run: python scripts/make_notebook.py --check
