@@ -2,3 +2,4 @@ numpy
 torch
 tiktoken
 pytest
+safetensors
