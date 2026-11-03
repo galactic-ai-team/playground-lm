@@ -48,12 +48,12 @@ CONFIG = {
 
 # --- Imports from other lanes --------------------------------------------
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from train.checkpoint import CheckpointManager, DEFAULT_INTERVAL_S
-from train.model import PlaygroundLM        # Claude's lane
-from train.tokenizer import load_tokenizer   # GPT-6's lane
-from train.data import build_dataloader      # shared; hooks Nova's shards
+from playground_lm.train.checkpoint import CheckpointManager, DEFAULT_INTERVAL_S
+from playground_lm.model import PlaygroundLM        # Claude's lane
+from playground_lm.tokenizer import get_tokenizer   # GPT-6's lane
+from playground_lm.train.data import build_dataloader
 
 
 def main() -> None:
@@ -63,11 +63,12 @@ def main() -> None:
 
     # Data: Nova publishes tokenized shards. build_dataloader handles the
     # memmap + batching so we don't load the whole corpus into RAM.
-    tokenizer = load_tokenizer(str(DATA_DIR / "tokenizer"))
+    tokenizer = get_tokenizer()
     train_loader = build_dataloader(
         DATA_DIR / "train.bin",
         context_len=CONFIG["context_len"],
         batch_size=CONFIG["batch_size"],
+        stride=1,
     )
     val_loader = build_dataloader(
         DATA_DIR / "val.bin",
@@ -218,7 +219,7 @@ def upload_via_subprocess() -> None:
     import subprocess
     result = subprocess.run(
         [
-            sys.executable, "-m", "train.upload_release",
+            sys.executable, "-m", "playground_lm.train.upload_release",
             "--run-dir", str(RUN_DIR),
             "--repo", REPO,
             "--tag", RELEASE_TAG,
