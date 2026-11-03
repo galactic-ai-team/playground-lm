@@ -113,36 +113,6 @@ def test_resume_restores_optimizer_state(run_dir):
                 assert torch.equal(a, b), f"optimizer state {pid}.{k} mismatch"
 
 
-def test_resume_restores_rng_state(run_dir):
-    """torch RNG state is restored — subsequent random draws are identical."""
-    model, opt = _make_model_and_opt()
-    _train_step(model, opt)
-
-    ckpt = CheckpointManager(run_dir, run_id="test", config=CONFIG)
-    ckpt.save(model, opt, step=1, tokens_seen=32, wall_time_s=0.1)
-
-    # Draw a value with a specific rng state set.
-    torch.manual_seed(1234)
-    expected_next = torch.randn(3)
-
-    # Now restore from checkpoint and draw again with the same seed:
-    # the checkpoint stored whatever rng state was active at save time.
-    torch.manual_seed(1234)
-    model2, opt2 = _make_model_and_opt()
-    ckpt.resume(model2, opt2)
-    # After resume, rng state == whatever was saved. Draw 3 values and check
-    # they equal the ones from the fresh-seeded run above.
-    got = torch.randn(3)
-    # This only passes if save/load preserves torch rng state.
-    # Note: the save happened after manual_seed(1234) was NOT yet called, so
-    # the saved state is whatever was present. To make the test meaningful,
-    # we need the save to have happened with the same seed applied.
-    # Rewriting: save, then set seed, then draw, then resume into fresh model,
-    # then draw again with same sequence.
-    # See test_rng_state_roundtrip below for the cleaner version.
-    del expected_next, got
-
-
 def test_rng_state_roundtrip(run_dir):
     """Save when rng is in a known state; resume; next draw matches."""
     model, opt = _make_model_and_opt()
