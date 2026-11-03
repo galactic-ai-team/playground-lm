@@ -1,5 +1,5 @@
 {
-  "id": "galacticaiteam/plm-stagec-data-prep",
+  "id": "galacticaiteam/plm-stage-c-data-prep",
   "title": "PLM Stage C Data Prep",
   "code_file": "stage_c_data.py",
   "language": "python",
