@@ -63,7 +63,7 @@ def main() -> None:
 
     # Data: Nova publishes tokenized shards. build_dataloader handles the
     # memmap + batching so we don't load the whole corpus into RAM.
-    tokenizer = load_tokenizer(str(DATA_DIR / "tokenizer"))
+    tokenizer = get_tokenizer()
     train_loader = build_dataloader(
         DATA_DIR / "train.bin",
         context_len=CONFIG["context_len"],
@@ -218,7 +218,7 @@ def upload_via_subprocess() -> None:
     import subprocess
     result = subprocess.run(
         [
-            sys.executable, "-m", "train.upload_release",
+            sys.executable, "-m", "playground_lm.train.upload_release",
             "--run-dir", str(RUN_DIR),
             "--repo", REPO,
             "--tag", RELEASE_TAG,
