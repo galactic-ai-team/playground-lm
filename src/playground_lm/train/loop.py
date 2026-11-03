@@ -19,6 +19,14 @@ Review fixes (Claude):
     extra_state={"grad_scaler": ...} to the checkpoint manager, and
     start_scaler_state restores it on resume (pass
     resumed["extra"].get("grad_scaler") from CheckpointManager.resume).
+  * Multi-GPU (DDP via torchrun, see train/distributed.py): when a process
+    group is running, gradients are all-reduced once per optimizer step
+    (no_sync on the other micro-batches), tokens_seen and tokens_per_sec
+    count every GPU, logged and validation losses are averaged over GPUs,
+    the session-budget stop is agreed by all ranks, and only rank 0 writes
+    metrics, saves checkpoints and calls on_save. Checkpoints hold the plain
+    model, so the format is unchanged. Single-GPU and CPU runs don't touch
+    torch.distributed at all.
 """
 
 import json
@@ -29,6 +37,9 @@ from contextlib import nullcontext
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
+
+from .distributed import unwrap
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +75,31 @@ def _make_grad_scaler():
         return torch.cuda.amp.GradScaler()  # older 2.x
 
 
+class _NullMetrics:
+    """Stands in for metrics.jsonl on ranks other than 0."""
+
+    def write(self, _text):
+        pass
+
+    def flush(self):
+        pass
+
+
+def _world():
+    """(rank, world_size) of a running process group, else (0, 1)."""
+    if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
+        return dist.get_rank(), dist.get_world_size()
+    return 0, 1
+
+
+def _mean_over_ranks(value, world):
+    # SUM then divide: gloo (CPU tests) has no AVG reduce op.
+    if world > 1:
+        dist.all_reduce(value, op=dist.ReduceOp.SUM)
+        value /= world
+    return value
+
+
 def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
           config, start_step=0, max_steps=200_000, device="cpu", on_save=None,
           start_tokens_seen: int = 0, start_wall_time_s: float = 0.0,
@@ -94,7 +130,10 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
     if not math.isfinite(clip) or clip <= 0:
         raise ValueError("grad_clip must be finite and positive")
     accum = config["grad_accum_steps"]
-    tokens_per_step = config["batch_size"] * accum * config["context_len"]
+    rank, world = _world()
+    is_main = rank == 0
+    # Global tokens per optimizer step: every GPU processes its own batches.
+    tokens_per_step = config["batch_size"] * accum * config["context_len"] * world
     device = torch.device(device)
     if device.type not in ("cpu", "cuda"):
         raise ValueError("this loop supports CPU and CUDA")
@@ -134,8 +173,11 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
         nonlocal save_count, last_saved_step
         if last_saved_step == step:
             return
+        if not is_main:  # weights and optimizer state are identical on every rank
+            last_saved_step = step
+            return
         synchronize()
-        args = (getattr(model, "_orig_mod", model), optimizer, step,
+        args = (unwrap(model), optimizer, step,
                 tokens_seen, start_wall_time_s + (time.perf_counter() - started))
         if scaler is None:
             checkpoint_manager.save(*args)
@@ -146,9 +188,13 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
         if on_save is not None:
             on_save(step, save_count)
 
+    eval_model = model.module if hasattr(model, "no_sync") and hasattr(model, "module") else model
+    no_sync = getattr(model, "no_sync", None) if world > 1 else None
     model.train()
     try:
-        with (run_dir / "metrics.jsonl").open("a", encoding="utf-8") as metrics:
+        metrics_file = ((run_dir / "metrics.jsonl").open("a", encoding="utf-8") if is_main
+                        else nullcontext(_NullMetrics()))
+        with metrics_file as metrics:
             while step < max_steps:
                 lr = _learning_rate(step + 1, peak, warmup, max_steps)
                 for group in optimizer.param_groups:
@@ -157,16 +203,20 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
                 update_started = time.perf_counter()
                 optimizer.zero_grad(set_to_none=True)
                 loss_sum = torch.zeros((), device=device, dtype=torch.float32)
-                for _ in range(accum):
+                for micro in range(accum):
                     x, y = next(train_loader)
-                    with autocast():
-                        _, loss = model(x.to(device), y.to(device))
-                        micro_loss = loss / accum
-                    loss_sum += loss.detach().float()
-                    if scaler is None:
-                        micro_loss.backward()
-                    else:
-                        scaler.scale(micro_loss).backward()
+                    # DDP: all-reduce gradients only on the last micro-batch.
+                    sync = (no_sync() if no_sync is not None and micro < accum - 1
+                            else nullcontext())
+                    with sync:
+                        with autocast():
+                            _, loss = model(x.to(device), y.to(device))
+                            micro_loss = loss / accum
+                        loss_sum += loss.detach().float()
+                        if scaler is None:
+                            micro_loss.backward()
+                        else:
+                            scaler.scale(micro_loss).backward()
                 if scaler is not None:
                     scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
@@ -187,6 +237,7 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
                 consecutive_overflows = 0
                 step += 1
                 tokens_seen += tokens_per_step
+                _mean_over_ranks(loss_sum, world)
                 synchronize()
                 elapsed = time.perf_counter() - update_started
                 record = dict(step=step, loss=loss_sum.item() / accum,
@@ -205,9 +256,9 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
                                     val_cache.append(next(val_loader))
                                 x, y = val_cache[i]
                                 with autocast():
-                                    _, val_loss = model(x.to(device), y.to(device))
+                                    _, val_loss = eval_model(x.to(device), y.to(device))
                                 val_sum += val_loss.detach().float()
-                        record["val_loss"] = val_sum.item() / eval_batches
+                        record["val_loss"] = _mean_over_ranks(val_sum, world).item() / eval_batches
                     finally:
                         model.train()
                 record["wall_time_s"] = (
@@ -215,13 +266,19 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
                 )
                 metrics.write(json.dumps(record) + "\n")
                 metrics.flush()
-                logger.info("%s", json.dumps(record))
+                if is_main:
+                    logger.info("%s", json.dumps(record))
                 if checkpoint_manager.should_save(step):
                     save()
-                if (max_session_s is not None
-                        and time.monotonic() - session_started >= float(max_session_s)):
-                    logger.info("session time budget reached at update %d; saving", step)
-                    break
+                if max_session_s is not None:
+                    out_of_time = time.monotonic() - session_started >= float(max_session_s)
+                    if world > 1:  # every rank must stop on the same update
+                        flag = torch.tensor([1.0 if out_of_time else 0.0], device=device)
+                        dist.all_reduce(flag, op=dist.ReduceOp.MAX)
+                        out_of_time = bool(flag.item())
+                    if out_of_time:
+                        logger.info("session time budget reached at update %d; saving", step)
+                        break
             save()
     except KeyboardInterrupt:
         optimizer.zero_grad(set_to_none=True)
