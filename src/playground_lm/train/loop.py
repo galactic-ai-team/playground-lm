@@ -15,6 +15,10 @@ Review fixes (Claude):
     iterator. Interval: config["eval_interval"] (default 500).
   * Optional config["max_session_s"]: save and return cleanly when a Kaggle
     or Colab session is about to run out.
+  * The FP16 GradScaler state is checkpointed: saves pass
+    extra_state={"grad_scaler": ...} to the checkpoint manager, and
+    start_scaler_state restores it on resume (pass
+    resumed["extra"].get("grad_scaler") from CheckpointManager.resume).
 """
 
 import json
@@ -62,7 +66,8 @@ def _make_grad_scaler():
 
 def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
           config, start_step=0, max_steps=200_000, device="cpu", on_save=None,
-          start_tokens_seen: int = 0, start_wall_time_s: float = 0.0):
+          start_tokens_seen: int = 0, start_wall_time_s: float = 0.0,
+          start_scaler_state=None):
     """Train from completed update start_step through max_steps (inclusive).
 
     Append one metrics record per update, with val_loss every eval_interval
@@ -71,7 +76,9 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
     start_wall_time_s; the one-based callback save_count covers this invocation
     only. Token counts start at start_tokens_seen and assume full batches of
     the configured size. FP16 overflows retry the same update number with
-    fresh micro-batches.
+    fresh micro-batches. start_scaler_state, if given, is a GradScaler
+    state_dict from a previous session; it is ignored when this run doesn't
+    use FP16 (e.g. resuming a T4 checkpoint on an A100 with bf16).
     """
     if not 0 <= start_step <= max_steps:
         raise ValueError("require 0 <= start_step <= max_steps")
@@ -93,6 +100,9 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
         raise ValueError("this loop supports CPU and CUDA")
     amp_dtype = _pick_amp_dtype(device, config.get("amp_dtype", "auto"))
     scaler = _make_grad_scaler() if amp_dtype == torch.float16 else None
+    if scaler is not None and start_scaler_state:
+        scaler.load_state_dict(start_scaler_state)
+        logger.info("resumed GradScaler at loss scale %s", scaler.get_scale())
     amp_name = {None: "fp32", torch.bfloat16: "bf16", torch.float16: "fp16"}[amp_dtype]
     logger.info("mixed precision: %s%s", amp_name, " + GradScaler" if scaler else "")
     max_overflow_retries = int(config.get("max_overflow_retries", 25))
@@ -125,10 +135,12 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
         if last_saved_step == step:
             return
         synchronize()
-        checkpoint_manager.save(
-            getattr(model, "_orig_mod", model), optimizer, step,
-            tokens_seen, start_wall_time_s + (time.perf_counter() - started),
-        )
+        args = (getattr(model, "_orig_mod", model), optimizer, step,
+                tokens_seen, start_wall_time_s + (time.perf_counter() - started))
+        if scaler is None:
+            checkpoint_manager.save(*args)
+        else:
+            checkpoint_manager.save(*args, extra_state={"grad_scaler": scaler.state_dict()})
         last_saved_step = step
         save_count += 1
         if on_save is not None:

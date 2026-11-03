@@ -17,6 +17,12 @@
 #     killed process doesn't leave a half-written manifest.
 #   - All paths are relative to a single run directory so a Colab/Kaggle
 #     session can be resumed just by re-mounting the same directory.
+#   - extra_state (Claude): a small dict of extra training state saved in the
+#     _state.pt file and returned by resume() under "extra". The training
+#     loop uses it for the FP16 GradScaler, so a resumed T4 session continues
+#     with the loss scale it had reached instead of restarting at 65536 and
+#     skipping updates on overflow until it settles. Checkpoints written
+#     before this existed resume with an empty "extra".
 
 import json
 import os
@@ -103,6 +109,7 @@ class CheckpointManager:
         step: int,
         tokens_seen: int,
         wall_time_s: float,
+        extra_state: Optional[dict] = None,
     ) -> CheckpointEntry:
         stem = f"step_{step:08d}"
         weights_path = self.ckpt_dir / f"{stem}.safetensors"
@@ -125,6 +132,7 @@ class CheckpointManager:
                 "torch_rng_state": torch.get_rng_state(),
                 "cuda_rng_state": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
                 "config": self.config,
+                "extra": dict(extra_state or {}),
             },
             str(state_path),
         )
@@ -178,6 +186,7 @@ class CheckpointManager:
         torch.set_rng_state(state["torch_rng_state"])
         if state.get("cuda_rng_state") is not None and torch.cuda.is_available():
             torch.cuda.set_rng_state_all(state["cuda_rng_state"])
+        state.setdefault("extra", {})  # checkpoints from before extra_state existed
         return state
 
     def list_checkpoints(self) -> list[CheckpointEntry]:
