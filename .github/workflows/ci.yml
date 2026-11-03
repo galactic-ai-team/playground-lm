@@ -13,4 +13,4 @@ jobs:
           python-version: "3.11"
       - run: pip install numpy tiktoken pytest && pip install torch --index-url https://download.pytorch.org/whl/cpu
       - run: pip install -e .
-      - run: python -m pytest -q
+      - run: python -m pytest -q tests data

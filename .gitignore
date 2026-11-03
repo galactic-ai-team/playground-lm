@@ -1,5 +1,6 @@
 __pycache__/
 *.pt
 *.bin
-data/
+data/processed/
+data/smoke/
 out/
