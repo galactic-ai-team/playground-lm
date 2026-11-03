@@ -1,0 +1,9 @@
+{
+  "model": "PlaygroundLM",
+  "checkpoints": [],
+  "benchmarks": {
+    "columns": ["val_loss", "perplexity", "hellaswag_acc_norm", "lambada_acc"],
+    "rows": []
+  },
+  "riddle_prompts": []
+}
