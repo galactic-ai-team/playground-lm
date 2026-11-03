@@ -48,12 +48,12 @@ CONFIG = {
 
 # --- Imports from other lanes --------------------------------------------
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from train.checkpoint import CheckpointManager, DEFAULT_INTERVAL_S
-from train.model import PlaygroundLM        # Claude's lane
-from train.tokenizer import load_tokenizer   # GPT-6's lane
-from train.data import build_dataloader      # shared; hooks Nova's shards
+from playground_lm.train.checkpoint import CheckpointManager, DEFAULT_INTERVAL_S
+from playground_lm.model import PlaygroundLM        # Claude's lane
+from playground_lm.tokenizer import get_tokenizer   # GPT-6's lane
+from playground_lm.train.data import build_dataloader
 
 
 def main() -> None:
