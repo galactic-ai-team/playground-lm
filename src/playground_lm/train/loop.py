@@ -38,6 +38,13 @@ Review fixes (Claude):
       peak_mem_gib     peak GPU memory allocated by this process since the
                        session started, in GiB (CUDA only; per GPU under DDP,
                        rank 0's value is logged).
+  * Per-stage LR schedule: config["schedule_start_step"] (default 0) is the
+    update the current schedule starts from. Warmup and cosine decay run
+    from there to max_steps, so a stage that continues from an earlier
+    stage's checkpoint (Stage C from Stage B's step 2035) warms up again
+    from 0 instead of jumping straight from the old stage's final LR (10% of
+    peak) to ~peak. It is a fixed number, not "wherever this session
+    resumed", so later sessions of the same stage continue the schedule.
 """
 
 import json
@@ -148,6 +155,13 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
         raise ValueError("lr must be finite and positive")
     if not math.isfinite(clip) or clip <= 0:
         raise ValueError("grad_clip must be finite and positive")
+    schedule_start = config.get("schedule_start_step", 0)
+    if not isinstance(schedule_start, int) or not 0 <= schedule_start <= start_step:
+        raise ValueError(
+            f"schedule_start_step must be an int in [0, start_step={start_step}], "
+            f"got {schedule_start!r}")
+    if max_steps > 0 and schedule_start >= max_steps:
+        raise ValueError(f"schedule_start_step {schedule_start} must be below max_steps {max_steps}")
     accum = config["grad_accum_steps"]
     rank, world = _world()
     is_main = rank == 0
@@ -215,7 +229,9 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
                         else nullcontext(_NullMetrics()))
         with metrics_file as metrics:
             while step < max_steps:
-                lr = _learning_rate(step + 1, peak, warmup, max_steps)
+                # Steps within the current stage's schedule (1-based).
+                lr = _learning_rate(step + 1 - schedule_start, peak, warmup,
+                                    max_steps - schedule_start)
                 for group in optimizer.param_groups:
                     group["lr"] = lr
                 synchronize()
