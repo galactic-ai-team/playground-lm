@@ -16,7 +16,12 @@
 #      /kaggle/working/runs/ so CheckpointManager.resume() picks it up with
 #      full continuity — no GH_TOKEN, no synthetic state.
 #   4. Clone main, launch notebooks/playground_lm_train.py via torchrun with
-#      PLM_STAGE=C and PLM_MAX_STEPS (default 29000, one pass over 2.857B).
+#      PLM_STAGE=C, PLM_MAX_STEPS (default 31101 = 2035 + 29066, one pass over
+#      2.857B), PLM_SCHEDULE_START=2035 (LR re-warms instead of jumping ~10x;
+#      Claude) and PLM_SAMPLING=permute (windows without replacement, so one
+#      pass covers every window instead of ~63%; Lumi, Claude's note).
+#   5. Delete the concatenated train.bin/val.bin (rebuilt every session) so
+#      they don't count against Kaggle's 20 GB saved output.
 #
 # Free-tools only: Kaggle 2x T4, no paid services.
 
@@ -55,13 +60,18 @@ STAGE_C_TRAIN_SLUG = "plm-stage-c-train"
 
 N_SESSIONS = 8
 
-# 2.857B tokens / 98,304 tokens per step ≈ 29,065 steps for one full pass.
-# Override via PLM_STAGE_C_MAX_STEPS env at push time (e.g. 500 for smoke).
-STAGE_C_MAX_STEPS = int(os.environ.get("PLM_STAGE_C_MAX_STEPS", "29000"))
+# FINAL step number (absolute; the run resumes at Stage B's 2035). One pass:
+# 2,857,393,718 tokens -> 2,790,423 non-overlapping 1024-token windows / 96
+# sequences per step = 29,066 steps -> 2035 + 29,066 = 31,101 (matches the
+# Stage C preset). Override via PLM_STAGE_C_MAX_STEPS at push time (e.g. 2535
+# for a 500-step smoke).
+STAGE_C_MAX_STEPS = int(os.environ.get("PLM_STAGE_C_MAX_STEPS", "31101"))
 
 ENV_OVERRIDES = {
     "PLM_STAGE": "C",
     "PLM_MAX_STEPS": str(STAGE_C_MAX_STEPS),
+    "PLM_SCHEDULE_START": str(STAGE_B_RESUME_STEP),  # re-warm LR (Claude)
+    "PLM_SAMPLING": "permute",  # without replacement (Claude's coverage note)
     "PLM_BATCH_SIZE": "6",              # T4-friendly; grad_accum → 16
     "PLM_MAX_SESSION_S": str(11 * 3600),  # under Kaggle's 12h GPU kill
     "PLM_DATA_DIR": str(CONCAT_DIR),      # holds train.bin / val.bin
@@ -371,6 +381,15 @@ def main() -> int:
     ]
     result = subprocess.run(cmd, env=env, cwd=str(REPO_DIR))
     log(f"torchrun exited with code {result.returncode}")
+
+    # 6. The concatenated data is rebuilt every session from the data-prep
+    #    mounts; drop it so it isn't saved as kernel output (5.7 GB).
+    for p in (CONCAT_DIR / "train.bin", CONCAT_DIR / "val.bin"):
+        try:
+            p.unlink()
+            log(f"removed {p} (rebuilt next session)")
+        except FileNotFoundError:
+            pass
     return result.returncode
 
 
