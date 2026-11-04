@@ -1,17 +1,18 @@
 /**
- * PlaygroundLM Demo App — Strict Manifest, Real GPT-2 BPE & ONNX Runtime Web Inference
+ * PlaygroundLM Demo App — Strict Manifest, Benchmarks.json, GPT-2 BPE & Non-Reloading Checkpoint Slider
  *
- * Capabilities:
- * - Uses `./gpt2_bpe.js` (`loadGPT2Tokenizer`, `GPT2_EOT_ID`) for exact 50,257-vocab GPT-2 BPE.
- * - Caches mounted ONNX sessions (`Map<url, InferenceSession>`, LRU max 3) so scrubbing the
- *   checkpoint slider swaps between Stage B / Stage C checkpoints instantaneously.
- * - Supports Temperature, Top-K, Top-P (nucleus), and Repetition Penalty sampling over `logits`.
- * - Renders live training/validation loss curves from `./loss_curve.json` (when present) and
- *   syncs the active checkpoint marker on the chart.
+ * Preserves:
+ * - `loadBenchmarkTable()` reading `./benchmarks.json` (with % accuracy columns and source note)
+ *   and falling back to `manifest.benchmarks` when needed.
+ * - `./gpt2_bpe.js` (`loadGPT2Tokenizer`, `GPT2_EOT_ID`) for exact 50,257-vocab GPT-2 BPE.
+ * - `./checkpoint_loader.js` (`CheckpointManager`) for non-reloading slider scrubbing, abortable
+ *   downloads, LRU session caching, and neighbor prefetching.
+ * - `./loss_chart.js` (`renderLossChart`) reading `./loss_curve.json`.
  */
 
 import { loadGPT2Tokenizer, GPT2_EOT_ID } from './gpt2_bpe.js';
 import { renderLossChart } from './loss_chart.js';
+import { CheckpointManager } from './checkpoint_loader.js';
 
 const COLUMN_LABELS = {
   model: 'Model / Step',
@@ -23,7 +24,7 @@ const COLUMN_LABELS = {
   lambada_acc: 'LAMBADA acc (↑)',
 };
 
-const MAX_CACHED_SESSIONS = 3;
+const PERCENT_COLUMNS = new Set(['hellaswag_acc_norm', 'lambada_acc', 'hellaswag', 'lambada']);
 
 // State
 let manifest = {
@@ -38,14 +39,12 @@ let manifest = {
 let lossCurveData = null;
 let activeCheckpointStep = null;
 let riddleIndex = 0;
-let ortModule = null;
 let onnxSession = null;
-let loadedCheckpointUrl = null;
-const sessionCache = new Map(); // url -> InferenceSession (LRU order)
 let hasWebGPU = false;
 let isGenerating = false;
 let stopRequested = false;
 let tokenizer = null;
+let checkpointManager = null;
 
 // DOM Elements
 const modelTitleEl = document.getElementById('model-title');
@@ -97,58 +96,6 @@ const benchThead = document.getElementById('bench-thead');
 const benchTbody = document.getElementById('bench-tbody');
 const benchSourceNote = document.getElementById('bench-source-note');
 
-// Restored from #62: demo/benchmarks.json is the primary benchmark source,
-// with manifest.json benchmark rows as the fallback.
-const BENCHMARK_COLUMNS = [
-  'val_loss',
-  'perplexity',
-  'hellaswag_acc_norm',
-  'lambada_acc',
-];
-
-function validBenchmarks(value) {
-  return value
-    && Array.isArray(value.columns)
-    && BENCHMARK_COLUMNS.every((key) => value.columns.includes(key))
-    && Array.isArray(value.rows)
-    && value.rows.every((row) =>
-      row && typeof row === 'object'
-      && typeof row.label === 'string'
-      && BENCHMARK_COLUMNS.every((key) =>
-        typeof row[key] === 'number' && Number.isFinite(row[key])
-      )
-    );
-}
-
-async function loadBenchmarkTable() {
-  try {
-    const res = await fetch('./benchmarks.json', { cache: 'no-store' });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-    const table = await res.json();
-    if (!validBenchmarks(table)) {
-      throw new Error('Invalid benchmarks.json schema');
-    }
-
-    manifest.benchmarks = {
-      columns: BENCHMARK_COLUMNS,
-      rows: table.rows,
-    };
-
-    if (benchSourceNote) {
-      benchSourceNote.textContent =
-        table.source_type === 'reported_rounded_summary'
-          ? 'Reported Stage B results (rounded). Full evaluation reports pending.'
-          : 'Full benchmark reports · HellaSwag validation · LAMBADA test';
-    }
-  } catch (err) {
-    console.warn('Using benchmark rows from manifest.json:', err);
-    if (benchSourceNote) {
-      benchSourceNote.textContent = 'Benchmark data from manifest.json';
-    }
-  }
-}
-
 /**
  * Applies repetition penalty, Temperature scaling, Top-K filtering, and Top-P (nucleus)
  * cutoff over a Float32Array slice of vocabulary logits.
@@ -194,7 +141,6 @@ export function sampleLogits(
     item.prob /= sumExp;
   }
 
-  // Top-P (nucleus) filtering over the sorted Top-K candidates
   const pCutoff = Math.max(0.05, Math.min(1.0, topP));
   const nucleus = [];
   let cumProb = 0;
@@ -204,7 +150,6 @@ export function sampleLogits(
     if (cumProb >= pCutoff && nucleus.length >= 1) break;
   }
 
-  // Renormalize nucleus probabilities for sampling
   let nucleusSum = 0;
   for (const item of nucleus) nucleusSum += item.prob;
   const r = Math.random() * nucleusSum;
@@ -239,9 +184,6 @@ async function detectWebGPU() {
     : 'WASM Ready · ONNX Runtime Web';
 }
 
-/**
- * Loads exact GPT-2 byte-level BPE via `./gpt2_bpe.js` (`vocab.json`+`merges.txt` or `tokenizer.json`).
- */
 async function initTokenizer() {
   const candidates = [
     ['./vocab.json', './merges.txt'],
@@ -255,11 +197,10 @@ async function initTokenizer() {
       tokenizerStatus.textContent = `(GPT-2 BPE · ${tokenizer.vocabSize.toLocaleString()} tokens · EOT ${tokenizer.eotId})`;
       return;
     } catch {
-      // Try next candidate path
+      // Try next candidate
     }
   }
 
-  // Byte fallback only if vocab/merges files have not been deployed to demo/ yet
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   tokenizer = {
@@ -278,7 +219,194 @@ async function initTokenizer() {
   tokenizerStatus.textContent = '(vocab.json/merges.txt not deployed yet — UTF-8 byte fallback)';
 }
 
-async function loadManifestAndLossCurve() {
+function formatMetricCell(val, colKey = '') {
+  if (val === null || val === undefined || val === '') return '—';
+  if (typeof val === 'number') {
+    if (PERCENT_COLUMNS.has(colKey)) {
+      const pct = val <= 1.0 && val >= 0 ? val * 100 : val;
+      return `${pct.toFixed(1)}%`; // #62: 1 decimal (source values are rounded)
+    }
+    return Number.isInteger(val) ? val.toLocaleString() : val.toFixed(4).replace(/\.?0+$/, '');
+  }
+  return String(val);
+}
+
+/**
+ * Loads `./benchmarks.json` (GPT-6's benchmark artifact) and renders the comparison table
+ * with % accuracy formatting and source notes, falling back to `manifest.benchmarks` if needed.
+ */
+export async function loadBenchmarkTable(fallbackBenchmarks = null) {
+  let benchData = null;
+
+  try {
+    const res = await fetch('./benchmarks.json', { cache: 'no-store' });
+    if (res.ok) {
+      benchData = await res.json();
+    }
+  } catch {
+    benchData = null;
+  }
+
+  const source = benchData || fallbackBenchmarks || manifest.benchmarks || {};
+  const cols = Array.isArray(source.columns) && source.columns.length
+    ? source.columns
+    : ['val_loss', 'perplexity', 'hellaswag_acc_norm', 'lambada_acc'];
+  const rows = Array.isArray(source.rows)
+    ? source.rows
+    : Array.isArray(source.models)
+    ? source.models
+    : [];
+
+  if (benchSourceNote) {
+    // Restored from #62: label the rounded reported summary honestly.
+    const noteText =
+      (benchData && benchData.source_type === 'reported_rounded_summary'
+        ? 'Reported Stage B results (rounded). Full evaluation reports pending.'
+        : null) ||
+      source.note ||
+      source.source_note ||
+      source.description ||
+      (benchData
+        ? 'Loaded from demo/benchmarks.json (% accuracy columns normalized).'
+        : 'Populated from demo/manifest.json & demo/benchmarks.json.');
+    benchSourceNote.textContent = noteText;
+  }
+
+  if (rows.length === 0) {
+    benchEmptyState.classList.remove('hidden');
+    benchTableWrap.classList.add('hidden');
+    return;
+  }
+
+  benchEmptyState.classList.add('hidden');
+  benchTableWrap.classList.remove('hidden');
+
+  const trHead = document.createElement('tr');
+  const thName = document.createElement('th');
+  thName.textContent = 'Model / Checkpoint';
+  trHead.appendChild(thName);
+
+  for (const col of cols) {
+    const th = document.createElement('th');
+    const colKey = typeof col === 'object' ? col.key || col.id : col;
+    const colLabel = typeof col === 'object' ? col.label || colKey : COLUMN_LABELS[colKey] || colKey;
+    th.textContent = colLabel;
+    trHead.appendChild(th);
+  }
+  benchThead.innerHTML = '';
+  benchThead.appendChild(trHead);
+
+  benchTbody.innerHTML = '';
+  for (const row of rows) {
+    const tr = document.createElement('tr');
+    if (row.step !== undefined && row.step !== null) {
+      tr.dataset.step = String(row.step);
+    }
+    if (
+      activeCheckpointStep !== null &&
+      row.step !== undefined &&
+      Number(row.step) === activeCheckpointStep
+    ) {
+      tr.classList.add('active-stage-row');
+    }
+
+    const tdLabel = document.createElement('td');
+    const rowName =
+      row.model ||
+      row.name ||
+      row.label ||
+      (row.step !== undefined ? `Step ${Number(row.step).toLocaleString()}` : 'Run');
+    tdLabel.textContent = String(rowName);
+    tr.appendChild(tdLabel);
+
+    for (let cIdx = 0; cIdx < cols.length; cIdx++) {
+      const col = cols[cIdx];
+      const colKey = typeof col === 'object' ? col.key || col.id : col;
+      const td = document.createElement('td');
+      const rawVal = Array.isArray(row)
+        ? row[cIdx]
+        : row.metrics && colKey in row.metrics
+        ? row.metrics[colKey]
+        : row[colKey];
+      td.textContent = formatMetricCell(rawVal, colKey);
+      tr.appendChild(td);
+    }
+    benchTbody.appendChild(tr);
+  }
+}
+
+function updateStageButtonsCacheBadges() {
+  if (!checkpointManager) return;
+  document.querySelectorAll('.stage-btn').forEach((btn) => {
+    const idx = Number(btn.dataset.idx);
+    const ckpt = checkpointManager.checkpoints[idx];
+    const cached = ckpt && checkpointManager.isCached(ckpt.resolvedUrl);
+    btn.classList.toggle('cached', Boolean(cached));
+  });
+}
+
+function handleCheckpointStatus(status) {
+  const { state, index, checkpoint, session, message } = status;
+
+  if (checkpoint) {
+    activeCheckpointStep = checkpoint.step !== undefined ? Number(checkpoint.step) : null;
+    metaStep.textContent =
+      activeCheckpointStep !== null ? activeCheckpointStep.toLocaleString() : '—';
+    metaTokens.textContent =
+      checkpoint.tokens_seen !== undefined
+        ? Number(checkpoint.tokens_seen).toLocaleString()
+        : '—';
+    const fileLabel = (checkpoint.resolvedUrl || '').split('/').pop() || 'manifest.json';
+    ckptUrlTag.textContent = fileLabel;
+  }
+
+  if (index >= 0) {
+    ckptSlider.value = String(index);
+    document.querySelectorAll('.stage-btn').forEach((btn) => {
+      btn.classList.toggle('active', Number(btn.dataset.idx) === index);
+    });
+  }
+
+  document.querySelectorAll('#bench-tbody tr').forEach((tr) => {
+    tr.classList.toggle(
+      'active-stage-row',
+      tr.dataset.step !== undefined && Number(tr.dataset.step) === activeCheckpointStep
+    );
+  });
+
+  if (lossChartContainer && lossCurveData) {
+    renderLossChart(lossChartContainer, lossCurveData, {
+      activeStep: activeCheckpointStep,
+    });
+  }
+
+  metaSession.textContent = message || state;
+  updateStageButtonsCacheBadges();
+
+  if (state === 'mounted' && session) {
+    onnxSession = session;
+    runtimeDot.classList.remove('error');
+    runtimeDot.classList.add('ready');
+    btnGenerate.disabled = isGenerating;
+    if (!isGenerating && outputStream.querySelector('.muted')) {
+      outputStream.innerHTML = `<span class="muted">Checkpoint <code>${checkpoint.resolvedUrl}</code> ready (${message}). Enter a prompt and click Generate.</span>`;
+    }
+  } else if (state === 'loading' || state === 'compiling') {
+    onnxSession = null;
+    btnGenerate.disabled = true;
+  } else if (state === 'error') {
+    onnxSession = null;
+    btnGenerate.disabled = true;
+    runtimeDot.classList.remove('ready');
+    runtimeDot.classList.add('error');
+    outputStream.innerHTML = `<span class="muted">Failed to load ONNX checkpoint from <code>${checkpoint?.resolvedUrl || ''}</code>: ${status.error?.message || message}</span>`;
+  } else if (state === 'unmounted') {
+    onnxSession = null;
+    btnGenerate.disabled = true;
+  }
+}
+
+async function loadManifestAndArtifacts() {
   try {
     const res = await fetch('./manifest.json', { cache: 'no-store' });
     if (res.ok) {
@@ -308,10 +436,9 @@ async function loadManifestAndLossCurve() {
     lossCurveData = null;
   }
 
-  // The standalone benchmark table takes precedence when available.
-  // Checkpoint URLs and riddle prompts still come from manifest.json.
-  await loadBenchmarkTable();
-  renderManifestUI();
+  renderManifestCheckpointsAndRiddles();
+  await loadBenchmarkTable(manifest.benchmarks);
+
   if (lossChartContainer) {
     renderLossChart(lossChartContainer, lossCurveData, {
       activeStep: activeCheckpointStep,
@@ -319,19 +446,13 @@ async function loadManifestAndLossCurve() {
   }
 }
 
-function formatNumber(val) {
-  if (val === null || val === undefined || val === '') return '—';
-  if (typeof val === 'number') {
-    return Number.isInteger(val) ? val.toLocaleString() : val.toFixed(4).replace(/\.?0+$/, '');
-  }
-  return String(val);
-}
-
-function renderManifestUI() {
+function renderManifestCheckpointsAndRiddles() {
   modelTitleEl.textContent = manifest.model || 'PlaygroundLM';
   metaModel.textContent = manifest.model || 'PlaygroundLM';
 
   const ckpts = manifest.checkpoints || [];
+  checkpointManager.setCheckpoints(ckpts);
+
   if (ckpts.length === 0) {
     modelBadgeEl.textContent = 'Training in Progress (0 Exported Checkpoints)';
     ckptEmptyState.classList.remove('hidden');
@@ -343,24 +464,27 @@ function renderManifestUI() {
     ckptEmptyState.classList.add('hidden');
     ckptControls.classList.remove('hidden');
 
+    ckptSlider.min = '0';
     ckptSlider.max = String(ckpts.length - 1);
     ckptSlider.value = String(ckpts.length - 1);
     ckptStageButtons.innerHTML = '';
 
-    ckpts.forEach((c, idx) => {
+    checkpointManager.checkpoints.forEach((c, idx) => {
       const btn = document.createElement('button');
+      btn.type = 'button';
       btn.className = 'stage-btn';
       btn.dataset.idx = String(idx);
       const label = c.label ? `${c.label}<br>` : '';
-      btn.innerHTML = `${label}Step ${Number(c.step ?? idx).toLocaleString()}<br><small>${Number(c.tokens_seen ?? 0).toLocaleString()} tok</small>`;
-      btn.addEventListener('click', () => selectCheckpoint(idx));
+      btn.innerHTML = `${label}Step ${c.step.toLocaleString()}<br><small>${c.tokens_seen.toLocaleString()} tok</small>`;
+      btn.addEventListener('click', () => {
+        checkpointManager.selectIndex(idx).catch(() => {});
+      });
       ckptStageButtons.appendChild(btn);
     });
 
-    selectCheckpoint(ckpts.length - 1);
+    checkpointManager.selectIndex(ckpts.length - 1).catch(() => {});
   }
 
-  // Riddle Prompts
   const riddles = manifest.riddle_prompts || [];
   if (riddles.length > 0) {
     btnRiddle.disabled = false;
@@ -371,152 +495,6 @@ function renderManifestUI() {
   } else {
     btnRiddle.disabled = true;
     btnRiddle.textContent = '🧩 Riddle Prompt (none in manifest)';
-  }
-
-  // Benchmarks Table
-  const cols = manifest.benchmarks?.columns || [
-    'val_loss',
-    'perplexity',
-    'hellaswag_acc_norm',
-    'lambada_acc',
-  ];
-  const rows = manifest.benchmarks?.rows || [];
-
-  if (rows.length === 0) {
-    benchEmptyState.classList.remove('hidden');
-    benchTableWrap.classList.add('hidden');
-  } else {
-    benchEmptyState.classList.add('hidden');
-    benchTableWrap.classList.remove('hidden');
-
-    const trHead = document.createElement('tr');
-    const thName = document.createElement('th');
-    thName.textContent = 'Model / Checkpoint';
-    trHead.appendChild(thName);
-
-    for (const col of cols) {
-      const th = document.createElement('th');
-      th.textContent = COLUMN_LABELS[col] || col;
-      trHead.appendChild(th);
-    }
-    benchThead.innerHTML = '';
-    benchThead.appendChild(trHead);
-
-    benchTbody.innerHTML = '';
-    for (const row of rows) {
-      const tr = document.createElement('tr');
-      if (row.step !== undefined) tr.dataset.step = String(row.step);
-
-      const tdLabel = document.createElement('td');
-      const rowName =
-        row.model ||
-        row.name ||
-        row.label ||
-        (row.step !== undefined ? `Step ${row.step}` : 'Run');
-      tdLabel.textContent = String(rowName);
-      tr.appendChild(tdLabel);
-
-      for (const col of cols) {
-        const td = document.createElement('td');
-        const val = Array.isArray(row) ? row[cols.indexOf(col)] : row[col];
-        td.textContent =
-          typeof val === 'number'
-          && (col === 'hellaswag_acc_norm' || col === 'lambada_acc')
-            ? `${(val * 100).toFixed(1)}%`
-            : formatNumber(val);
-        tr.appendChild(td);
-      }
-      benchTbody.appendChild(tr);
-    }
-  }
-}
-
-async function selectCheckpoint(index) {
-  const ckpts = manifest.checkpoints || [];
-  const ckpt = ckpts[index];
-  if (!ckpt) return;
-
-  ckptSlider.value = String(index);
-  document.querySelectorAll('.stage-btn').forEach((btn) => {
-    btn.classList.toggle('active', Number(btn.dataset.idx) === index);
-  });
-
-  activeCheckpointStep = ckpt.step !== undefined ? Number(ckpt.step) : null;
-  metaStep.textContent = activeCheckpointStep !== null ? activeCheckpointStep.toLocaleString() : '—';
-  metaTokens.textContent =
-    ckpt.tokens_seen !== undefined ? Number(ckpt.tokens_seen).toLocaleString() : '—';
-  ckptUrlTag.textContent = ckpt.url || 'no url';
-
-  document.querySelectorAll('#bench-tbody tr').forEach((tr) => {
-    tr.classList.toggle(
-      'active-stage-row',
-      tr.dataset.step !== undefined && Number(tr.dataset.step) === activeCheckpointStep
-    );
-  });
-
-  if (lossChartContainer && lossCurveData) {
-    renderLossChart(lossChartContainer, lossCurveData, {
-      activeStep: activeCheckpointStep,
-    });
-  }
-
-  if (ckpt.url) {
-    await mountOnnxSession(ckpt.url);
-  } else {
-    onnxSession = null;
-    loadedCheckpointUrl = null;
-    metaSession.textContent = 'No URL in checkpoint';
-    btnGenerate.disabled = true;
-  }
-}
-
-async function mountOnnxSession(url) {
-  if (!url) return;
-
-  // Instant swap if already cached in LRU session map
-  if (sessionCache.has(url)) {
-    const cached = sessionCache.get(url);
-    sessionCache.delete(url);
-    sessionCache.set(url, cached);
-    onnxSession = cached;
-    loadedCheckpointUrl = url;
-    metaSession.textContent = `Cached (${hasWebGPU ? 'WebGPU' : 'WASM'})`;
-    ckptUrlTag.textContent = url.split('/').pop() || url;
-    btnGenerate.disabled = false;
-    return;
-  }
-
-  metaSession.textContent = 'Loading ONNX...';
-  btnGenerate.disabled = true;
-
-  try {
-    if (!ortModule) {
-      ortModule = await import('https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.mjs');
-    }
-    const session = await ortModule.InferenceSession.create(url, {
-      executionProviders: hasWebGPU ? ['webgpu', 'wasm'] : ['wasm'],
-    });
-
-    if (sessionCache.size >= MAX_CACHED_SESSIONS) {
-      const oldestKey = sessionCache.keys().next().value;
-      sessionCache.delete(oldestKey);
-    }
-    sessionCache.set(url, session);
-
-    onnxSession = session;
-    loadedCheckpointUrl = url;
-    metaSession.textContent = `Mounted (${hasWebGPU ? 'WebGPU' : 'WASM'})`;
-    ckptUrlTag.textContent = url.split('/').pop() || url;
-    btnGenerate.disabled = false;
-    outputStream.innerHTML = `<span class="muted">Checkpoint <code>${url}</code> mounted. Enter a prompt and click Generate.</span>`;
-  } catch (err) {
-    onnxSession = null;
-    loadedCheckpointUrl = null;
-    metaSession.textContent = 'Mount failed';
-    runtimeDot.classList.remove('ready');
-    runtimeDot.classList.add('error');
-    outputStream.innerHTML = `<span class="muted">Failed to load ONNX checkpoint from <code>${url}</code>: ${err.message}</span>`;
-    btnGenerate.disabled = true;
   }
 }
 
@@ -541,7 +519,8 @@ function renderLogitBars(candidates, stepLabel) {
 }
 
 async function runOnnxGeneration() {
-  if (isGenerating || !onnxSession || !ortModule) return;
+  const ort = checkpointManager?.ortModule;
+  if (isGenerating || !onnxSession || !ort) return;
 
   isGenerating = true;
   stopRequested = false;
@@ -572,7 +551,7 @@ async function runOnnxGeneration() {
 
       const contextIds = inputIds.slice(-1024);
       const bigIntIds = BigInt64Array.from(contextIds.map((id) => BigInt(id)));
-      const inputTensor = new ortModule.Tensor('int64', bigIntIds, [1, contextIds.length]);
+      const inputTensor = new ort.Tensor('int64', bigIntIds, [1, contextIds.length]);
 
       const results = await onnxSession.run({ input_ids: inputTensor });
       const logitsTensor = results.logits ?? results[Object.keys(results)[0]];
@@ -640,7 +619,10 @@ async function runOnnxGeneration() {
 }
 
 // Event Listeners
-ckptSlider.addEventListener('input', (e) => selectCheckpoint(Number(e.target.value)));
+ckptSlider.addEventListener('input', (e) => {
+  const idx = Number(e.target.value);
+  checkpointManager?.selectIndex(idx).catch(() => {});
+});
 
 tempSlider.addEventListener('input', (e) => (tempVal.textContent = Number(e.target.value).toFixed(2)));
 topkSlider.addEventListener('input', (e) => (topkVal.textContent = e.target.value));
@@ -666,7 +648,7 @@ btnToggleCustomOnnx.addEventListener('click', () => {
 
 btnFetchOnnx.addEventListener('click', () => {
   const url = onnxUrlInput.value.trim();
-  if (url) mountOnnxSession(url);
+  if (url) checkpointManager?.mountCustomUrl(url).catch(() => {});
 });
 
 btnGenerate.addEventListener('click', runOnnxGeneration);
@@ -676,5 +658,10 @@ btnStop.addEventListener('click', () => {
 
 // Boot
 await detectWebGPU();
+checkpointManager = new CheckpointManager({
+  hasWebGPU,
+  maxCachedSessions: 3,
+  onStatusChange: handleCheckpointStatus,
+});
 await initTokenizer();
-await loadManifestAndLossCurve();
+await loadManifestAndArtifacts();
