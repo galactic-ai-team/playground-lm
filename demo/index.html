@@ -140,12 +140,13 @@
       <section class="panel">
         <div class="section-head">
           <h2>📊 Measured Benchmark Results</h2>
-          <span class="mono-tag">manifest.json</span>
+          <span class="mono-tag">benchmarks.json</span>
         </div>
-        <p class="muted">Populated strictly from <code>benchmarks.columns</code> and <code>benchmarks.rows</code> in <code>demo/manifest.json</code>.</p>
+        <p class="muted">PlaygroundLM checkpoints compared with OpenAI GPT-2 124M using the same evaluation metrics.</p>
+        <p class="muted" id="bench-source-note" aria-live="polite">Loading benchmark results...</p>
 
         <div id="bench-empty-state" class="empty-banner">
-          <strong>Not evaluated yet.</strong> <code>benchmarks.rows</code> in <code>demo/manifest.json</code> is currently empty.
+          <strong>No benchmark results available.</strong> Run the evaluation pipeline to populate <code>demo/benchmarks.json</code>.
         </div>
 
         <div class="table-wrap hidden" id="bench-table-wrap">
