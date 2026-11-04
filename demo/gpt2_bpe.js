@@ -5,6 +5,7 @@
  * - Reversible 256-byte to Unicode character bijection (`bytesToUnicode`)
  * - GPT-2 pre-tokenization regex with Unicode property escapes (\p{L}, \p{N})
  * - Iterative lowest-rank bigram merge loop with per-token BPE cache
+ * - Out-of-vocabulary (OOV) merged piece fallback to single-byte tokens
  * - Full UTF-8 byte decoding (`decode(ids)` accepts either `number` or `number[]`)
  * - EOT special token `<|endoftext|>` (50256) handling
  */
@@ -202,6 +203,8 @@ export function createGPT2Tokenizer(vocabObj, mergesInput) {
 
   /**
    * Encodes a plain string without `<|endoftext|>` splitting.
+   * If a BPE piece is out-of-vocabulary, falls back to its individual byte-mapped characters
+   * (or raw byte value if even the single-byte character is absent from a partial vocab).
    *
    * @param {string} segment
    * @returns {number[]}
@@ -221,9 +224,26 @@ export function createGPT2Tokenizer(vocabObj, mergesInput) {
 
       const pieces = bpe(mapped).split(' ');
       for (let i = 0; i < pieces.length; i++) {
-        const id = encoder.get(pieces[i]);
+        const piece = pieces[i];
+        const id = encoder.get(piece);
         if (id !== undefined) {
           bpeTokens.push(id);
+        } else {
+          // Out-of-vocab piece fallback: decompose into individual byte-mapped chars
+          for (const ch of piece) {
+            const byteCharId = encoder.get(ch);
+            if (byteCharId !== undefined) {
+              bpeTokens.push(byteCharId);
+            } else {
+              const rawByte = byteDecoder.get(ch);
+              if (rawByte !== undefined) {
+                bpeTokens.push(rawByte);
+                if (!decoder.has(rawByte)) {
+                  decoder.set(rawByte, ch);
+                }
+              }
+            }
+          }
         }
       }
     }
