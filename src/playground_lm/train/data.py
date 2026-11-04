@@ -293,3 +293,77 @@ def _batch_from_windows(
         x[i] = tokens[s : s + context_len].astype(np.int64)
         y[i] = tokens[s + 1 : s + context_len + 1].astype(np.int64)
     return torch.from_numpy(x), torch.from_numpy(y)
+
+
+# --- Without-replacement sampling (Lumi, for Claude's Stage C coverage note) ---
+#
+# Random windows WITH replacement cover only ~1 - 1/e ≈ 63% of the distinct
+# windows when the number of samples equals the number of windows (Stage C:
+# ~2.79M non-overlapping 1024-token windows in 2.857B tokens, ~29k steps x 96
+# sequences). build_permuted_dataloader instead walks a fixed pseudo-random
+# permutation of the non-overlapping windows, so one pass touches every window
+# exactly once.
+#
+# The permutation is affine, window(k) = (a * k + b) mod n with gcd(a, n) = 1,
+# a near n * 0.618 (golden ratio, so consecutive samples land far apart) and b
+# drawn from `seed`. It needs no O(n) memory and is a pure function of the
+# global sample index k, so resume and DDP are exact: the caller passes the
+# index of its first sample and how far k advances per yielded batch.
+# Notebook: first_sample = (start_step - sample_start_step) * accum * world *
+# batch + rank * batch, sample_stride = world * batch. Later passes reuse the
+# same order (k wraps mod n).
+
+_GOLDEN = 0.6180339887498949
+
+
+def _affine_multiplier(n: int) -> int:
+    import math
+
+    a = max(1, int(n * _GOLDEN))
+    while math.gcd(a, n) != 1:
+        a += 1
+    return a % n if n > 1 else 0
+
+
+def build_permuted_dataloader(
+    path: str | os.PathLike,
+    context_len: int,
+    batch_size: int,
+    first_sample: int = 0,
+    sample_stride: int | None = None,
+    seed: int = 42,
+) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
+    """Infinite (x, y) batches over non-overlapping windows of one uint16
+    token file, sampled without replacement (see the comment above).
+
+    Batch j (0-based) holds global samples first_sample + j * sample_stride
+    + i for i in range(batch_size). sample_stride defaults to batch_size
+    (one process); under DDP use world_size * batch_size with each rank's
+    first_sample offset by rank * batch_size.
+    """
+    path = Path(path)
+    if context_len <= 0:
+        raise ValueError(f"context_len must be positive, got {context_len}")
+    if batch_size <= 0:
+        raise ValueError(f"batch_size must be positive, got {batch_size}")
+    stride = batch_size if sample_stride is None else sample_stride
+    if stride < batch_size:
+        raise ValueError(f"sample_stride {stride} must be >= batch_size {batch_size}")
+    if first_sample < 0:
+        raise ValueError(f"first_sample must be >= 0, got {first_sample}")
+    if not path.exists():
+        raise FileNotFoundError(f"token file not found: {path}")
+    tokens = _open_tokens(path, context_len)
+    n = (len(tokens) - 1) // context_len  # windows need context_len + 1 tokens
+    a = _affine_multiplier(n)
+    b = int(np.random.default_rng(seed).integers(0, n))
+
+    def generator() -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
+        k0 = first_sample
+        while True:
+            k = np.arange(k0, k0 + batch_size, dtype=np.int64) % n
+            windows = (a * k + b) % n  # a, k < n < 2**31: no int64 overflow
+            yield _batch_from_starts(tokens, windows * context_len, context_len)
+            k0 += stride
+
+    return generator()

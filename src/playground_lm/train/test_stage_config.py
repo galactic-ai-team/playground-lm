@@ -39,16 +39,16 @@ def test_stage_b():
 
 def test_stage_c():
     plan = resolve_stage_plan("C")
-    assert plan.max_steps == 10172
+    assert plan.max_steps == 31101
     assert plan.warmup_steps == 1000
-    assert plan.milestones == (2000, 5000, 8000, 10172)
+    assert plan.milestones == (2035, 5000, 10000, 15000, 20000, 25000, 31101)
     assert plan.stage == "C"
 
 
 def test_stage_case_insensitive():
     assert resolve_stage_plan("a").max_steps == 204
     assert resolve_stage_plan("b").max_steps == 2035
-    assert resolve_stage_plan("C").max_steps == 10172
+    assert resolve_stage_plan("C").max_steps == 31101
 
 
 def test_invalid_stage_raises():

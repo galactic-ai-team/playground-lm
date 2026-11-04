@@ -52,6 +52,8 @@
 # | `PLM_RELEASE_TAG` | Release tag for checkpoints | `v0.1-checkpoints` |
 # | `PLM_RUN_ID` | Manifest run id | `plm-001` |
 # | `PLM_COMPILE` | Set to `1` to enable `torch.compile` | unset (off) |
+# | `PLM_SCHEDULE_START` | Step the LR warmup/cosine starts from (a stage resuming another stage's checkpoint, e.g. `2035` for Stage C) | `0` |
+# | `PLM_SAMPLING` | `permute`: train windows without replacement (one pass covers every non-overlapping window; resume-exact from `PLM_SCHEDULE_START`). Default: random windows with replacement | unset |
 # | `PLM_DIST_TIMEOUT_MIN` | Multi-GPU only: how long a GPU waits for the other (e.g. during a rank-0 checkpoint upload) before giving up | `60` |
 #
 # **Stage presets** — see `src/playground_lm/train/stage_config.py` for the
@@ -204,6 +206,12 @@ TRAIN_CONFIG = {
 }
 if MAX_SESSION_S is not None:
     TRAIN_CONFIG["max_session_s"] = MAX_SESSION_S
+# Per-stage LR schedule (Claude): a stage resuming from an earlier stage's
+# checkpoint (Stage C from Stage B's step 2035) warms up again from this step
+# instead of jumping straight to ~peak LR. Fixed per stage, not per session.
+if os.environ.get("PLM_SCHEDULE_START"):
+    TRAIN_CONFIG["schedule_start_step"] = int(os.environ["PLM_SCHEDULE_START"])
+    _log(f"[train] PLM_SCHEDULE_START → schedule_start_step = {TRAIN_CONFIG['schedule_start_step']}")
 
 MANIFEST_CONFIG = {
     "model": MODEL_CONFIG,
@@ -231,7 +239,7 @@ from playground_lm.model import PlaygroundLM
 
 from playground_lm.tokenizer import get_tokenizer
 from playground_lm.train.checkpoint import CheckpointManager
-from playground_lm.train.data import build_dataloader
+from playground_lm.train.data import build_dataloader, build_permuted_dataloader
 from playground_lm.train.loop import train as train_loop
 from playground_lm.train.upload_release import upload as upload_release
 
@@ -345,14 +353,35 @@ if COMPILE and str(device).startswith("cuda"):
 # same `start_step`, preserving the no-replay guarantee.
 
 # %%
-train_loader = build_dataloader(
-    DATA_DIR / "train.bin",
-    context_len=MODEL_CONFIG["context_len"],
-    batch_size=TRAIN_CONFIG["batch_size"],
-    shuffle=True,
-    stride=1,
-    seed_offset=start_step + RANK * 1_000_000,
-)
+SAMPLING = os.environ.get("PLM_SAMPLING", "").strip().lower()
+if SAMPLING == "permute":
+    # Without replacement (Lumi, Claude's coverage note): global sample k of
+    # this stage is (step - schedule_start) * 96 + ...; each rank takes its
+    # own batch_size slice of every micro-step. (FP16 overflow retries draw
+    # extra batches, so a resume can repeat or skip a handful of windows.)
+    _sample_start = TRAIN_CONFIG.get("schedule_start_step", 0)
+    _per_micro = TRAIN_CONFIG["batch_size"] * WORLD_SIZE
+    train_loader = build_permuted_dataloader(
+        DATA_DIR / "train.bin",
+        context_len=MODEL_CONFIG["context_len"],
+        batch_size=TRAIN_CONFIG["batch_size"],
+        first_sample=(start_step - _sample_start) * grad_accum * _per_micro
+        + RANK * TRAIN_CONFIG["batch_size"],
+        sample_stride=_per_micro,
+    )
+    _log(f"[train] PLM_SAMPLING=permute: without replacement from sample "
+         f"{(start_step - _sample_start) * grad_accum * _per_micro:,}")
+elif SAMPLING:
+    raise ValueError(f"PLM_SAMPLING must be 'permute' or unset, got {SAMPLING!r}")
+else:
+    train_loader = build_dataloader(
+        DATA_DIR / "train.bin",
+        context_len=MODEL_CONFIG["context_len"],
+        batch_size=TRAIN_CONFIG["batch_size"],
+        shuffle=True,
+        stride=1,
+        seed_offset=start_step + RANK * 1_000_000,
+    )
 val_loader = build_dataloader(
     DATA_DIR / "val.bin",
     context_len=MODEL_CONFIG["context_len"],

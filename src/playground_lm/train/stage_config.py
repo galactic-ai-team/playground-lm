@@ -31,7 +31,12 @@ class StagePlan:
 STAGE_PRESETS: dict[str, dict] = {
     "A": {"max_steps": 204,   "warmup_steps": 50,   "milestones": (50, 100, 150, 204)},
     "B": {"max_steps": 2035,  "warmup_steps": 200,  "milestones": (500, 1000, 1500, 2035)},
-    "C": {"max_steps": 10172, "warmup_steps": 1000, "milestones": (2000, 5000, 8000, 10172)},
+    # Stage C continues Stage B (step 2035) for one pass over its 2,857,393,718
+    # train tokens: 2,790,423 non-overlapping 1024-token windows / 96 per step
+    # = 29,066 steps -> final step 31,101 (Claude's review: 10172 was only ~1.0B
+    # tokens). Run with PLM_SCHEDULE_START=2035 so the LR re-warms.
+    "C": {"max_steps": 31101, "warmup_steps": 1000,
+          "milestones": (2035, 5000, 10000, 15000, 20000, 25000, 31101)},
 }
 
 DEFAULT_MAX_STEPS = 200_000
