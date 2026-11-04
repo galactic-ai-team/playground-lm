@@ -39,13 +39,17 @@ CONCAT_DIR = WORKING
 GIT_REPO = "https://github.com/galactic-ai-team/playground-lm.git"
 GIT_BRANCH = "main"
 
-# Stage B checkpoint mount (kernel_sources).
-STAGE_B_INPUT = INPUT / "plm-stage-b-launch"
-STAGE_B_RUNS = STAGE_B_INPUT / "runs"
+KAGGLE_OWNER = "galacticaiteam"
+
+# Stage B checkpoint mount (kernel_sources). NOTE (Lumi integration fix):
+# Kaggle now mounts kernel_sources at /kaggle/input/notebooks/<owner>/<slug>/
+# (confirmed in the Stage B launch log), not /kaggle/input/<slug>/. Paths are
+# resolved at runtime by find_source_root() / find_in_source().
+STAGE_B_SLUG = "plm-stage-b-launch"
 STAGE_B_RESUME_STEP = 2035
 
 # Previous version of THIS kernel (self-reference, resume metadata only).
-PREV_TRAIN_RUNS = INPUT / "plm-stage-c-train" / "runs"
+STAGE_C_TRAIN_SLUG = "plm-stage-c-train"
 
 # --- Config ---------------------------------------------------------------
 
@@ -72,6 +76,59 @@ ENV_OVERRIDES = {
 
 def log(msg: str) -> None:
     print(f"[stage-c-train] {msg}", flush=True)
+
+
+def log_input_layout(max_depth: int = 4) -> None:
+    """Log the /kaggle/input tree (dirs only, shallow) so mount-layout
+    changes are visible in the kernel log."""
+    if not INPUT.exists():
+        log(f"{INPUT} does not exist")
+        return
+    log(f"{INPUT} layout (dirs, depth<={max_depth}):")
+    base_depth = len(INPUT.parts)
+    for root, dirs, _files in os.walk(INPUT):
+        depth = len(Path(root).parts) - base_depth
+        dirs[:] = sorted(d for d in dirs if d not in (".git", "playground-lm", "proc"))
+        if depth >= max_depth:
+            dirs[:] = []
+        log(f"  {root}")
+
+
+def find_source_root(slug: str) -> Path | None:
+    """Locate the mount root of a kernel_sources entry. Tries the known
+    layouts first, then walks /kaggle/input for a directory named <slug>."""
+    candidates = [
+        INPUT / "notebooks" / KAGGLE_OWNER / slug,
+        INPUT / slug,
+    ]
+    for c in candidates:
+        if c.is_dir():
+            return c
+    for root, dirs, _files in os.walk(INPUT):
+        if len(Path(root).parts) - len(INPUT.parts) > 4:
+            dirs[:] = []
+            continue
+        dirs[:] = [d for d in dirs if d not in (".git", "playground-lm")]
+        if slug in dirs:
+            return Path(root) / slug
+    return None
+
+
+def find_in_source(slug: str, filename: str, prefer: str = "") -> Path | None:
+    """Find <filename> inside kernel source <slug>'s mount, skipping the
+    playground-lm git clone that every launcher leaves in its output. If
+    several match, prefer paths containing <prefer>."""
+    root = find_source_root(slug)
+    if root is None:
+        return None
+    hits = [
+        p for p in root.rglob(filename)
+        if "playground-lm" not in p.relative_to(root).parts and ".git" not in p.parts
+    ]
+    if not hits:
+        return None
+    hits.sort(key=lambda p: (prefer not in str(p), len(p.parts), str(p)))
+    return hits[0]
 
 
 def load_gh_token() -> str | None:
@@ -105,17 +162,12 @@ def concat_session_bins() -> tuple[Path, Path]:
     total_tokens = 0
     with open(out_train, "wb") as f_out:
         for n in range(N_SESSIONS):
-            src = (
-                INPUT
-                / f"plm-stage-c-data-prep-s{n}"
-                / "stage-c"
-                / f"session-{n}"
-                / "final"
-                / "train.bin"
-            )
-            if not src.exists():
+            slug = f"plm-stage-c-data-prep-s{n}"
+            src = find_in_source(slug, "train.bin", prefer=f"session-{n}/final")
+            if src is None or not src.exists():
                 raise FileNotFoundError(
-                    f"session {n} train.bin not found at {src}"
+                    f"session {n} train.bin not found under kernel source {slug} "
+                    f"(mount root: {find_source_root(slug)}); see layout above"
                 )
             n_tok = src.stat().st_size // 2
             log(f"concat s{n}: {n_tok:,} tokens from {src}")
@@ -129,16 +181,14 @@ def concat_session_bins() -> tuple[Path, Path]:
 
     log(f"train.bin: {total_tokens:,} tokens at {out_train}")
 
-    val_src = (
-        INPUT
-        / "plm-stage-c-data-prep-s0"
-        / "stage-c"
-        / "session-0"
-        / "final"
-        / "val.bin"
+    val_src = find_in_source(
+        "plm-stage-c-data-prep-s0", "val.bin", prefer="session-0/final"
     )
-    if not val_src.exists():
-        raise FileNotFoundError(f"session 0 val.bin not found at {val_src}")
+    if val_src is None or not val_src.exists():
+        raise FileNotFoundError(
+            "session 0 val.bin not found under kernel source plm-stage-c-data-prep-s0"
+        )
+    log(f"val.bin source: {val_src}")
     shutil.copy(val_src, out_val)
     log(f"val.bin: {out_val.stat().st_size // 2:,} tokens copied from s0")
 
@@ -148,6 +198,8 @@ def concat_session_bins() -> tuple[Path, Path]:
 def copy_previous_train_runs() -> bool:
     """Copy previous Stage C session's runs/ into RUNS_DIR. Enables torchrun
     resume across Kaggle GPU sessions."""
+    root = find_source_root(STAGE_C_TRAIN_SLUG)
+    PREV_TRAIN_RUNS = (root / "runs") if root else INPUT / STAGE_C_TRAIN_SLUG / "runs"
     if not PREV_TRAIN_RUNS.exists():
         log(f"no previous Stage C runs at {PREV_TRAIN_RUNS}")
         return False
@@ -168,8 +220,15 @@ def copy_previous_train_runs() -> bool:
 def stage_b_checkpoint_paths() -> tuple[Path, Path]:
     """Return (weights_path, state_path) for the Stage B final checkpoint
     from the kernel_sources mount."""
-    weights = STAGE_B_RUNS / "checkpoints" / f"step_{STAGE_B_RESUME_STEP:08d}.safetensors"
-    state = STAGE_B_RUNS / "checkpoints" / f"step_{STAGE_B_RESUME_STEP:08d}_state.pt"
+    name = f"step_{STAGE_B_RESUME_STEP:08d}.safetensors"
+    found = find_in_source(STAGE_B_SLUG, name, prefer="runs/checkpoints")
+    if found is not None:
+        weights = found
+    else:
+        root = find_source_root(STAGE_B_SLUG) or (INPUT / STAGE_B_SLUG)
+        weights = root / "runs" / "checkpoints" / name
+    state = weights.parent / f"step_{STAGE_B_RESUME_STEP:08d}_state.pt"
+    log(f"Stage B checkpoint lookup: {weights}")
     return weights, state
 
 
@@ -183,6 +242,7 @@ def copy_stage_b_checkpoint() -> bool:
         return True
 
     weights, state = stage_b_checkpoint_paths()
+    STAGE_B_RUNS = weights.parent.parent
     if not weights.exists():
         log(f"FATAL: Stage B weights not found at {weights}")
         log(f"  available under {STAGE_B_RUNS / 'checkpoints'}:")
@@ -269,6 +329,7 @@ def _count_gpus() -> int:
 
 def main() -> int:
     log(f"starting Stage C training launch (max_steps={STAGE_C_MAX_STEPS})")
+    log_input_layout()
 
     # 1. Concatenate the 8 sessions.
     concat_session_bins()
