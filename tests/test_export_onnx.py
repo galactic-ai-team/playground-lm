@@ -197,3 +197,75 @@ def test_real_playgroundlm_export_rejects_long_context(tmp_path):
             sample_length=4,
             quantize=False,
         )
+
+
+def _tiny_playground(d_model=32):
+    from playground_lm.model import PlaygroundLM
+
+    torch.manual_seed(11)
+    return PlaygroundLM(
+        vocab_size=64,
+        n_layers=1,
+        n_heads=2,
+        d_model=d_model,
+        context_len=16,
+        dropout=0.0,
+    ).eval()
+
+
+def test_int8_keeps_attention_matmuls_fp32(tmp_path):
+    import onnx
+
+    from evals.export_onnx import weight_matmul_nodes
+
+    model = _tiny_playground()
+    manifest = export_bundle(
+        model, tmp_path, context_len=16, sample_length=4, quantize=True
+    )
+    weight, act_act = weight_matmul_nodes(tmp_path / "model.onnx")
+    assert len(act_act) == 2  # Q@K^T and P@V in the single block
+    assert weight
+
+    graph = onnx.load(str(tmp_path / "model.int8.onnx")).graph
+    remaining = {n.name for n in graph.node if n.op_type == "MatMul"}
+    assert set(act_act) <= remaining
+    assert any(n.op_type == "MatMulInteger" for n in graph.node)
+    # Embedding Gather is quantized too: no FP32 [vocab, d_model] table.
+    assert not any(
+        list(i.dims) == [64, 32] and i.data_type == onnx.TensorProto.FLOAT
+        for i in graph.initializer
+    )
+
+    art = manifest["artifacts"]["int8"]
+    assert art["quantization"] == "dynamic_qint8_per_channel"
+    assert art["excluded_activation_matmuls"] == 2
+    assert 0.0 <= art["quality"]["top1_agreement"] <= 1.0
+    assert np.isfinite(art["quality"]["mean_kl_nats"])
+
+
+def test_q4_matmul_nbits_mode(tmp_path):
+    import onnx
+
+    pytest.importorskip("onnxruntime.quantization.matmul_nbits_quantizer")
+    model = _tiny_playground()
+    manifest = export_bundle(
+        model,
+        tmp_path,
+        context_len=16,
+        sample_length=4,
+        quantize=True,
+        quant_mode="q4",
+    )
+    graph = onnx.load(str(tmp_path / "model.int8.onnx")).graph
+    assert any(n.op_type == "MatMulNBits" for n in graph.node)
+    art = manifest["artifacts"]["int8"]
+    assert art["validation"]["passed"]
+    assert art["quantization"].startswith("matmul_nbits_4bit")
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_unknown_quant_mode(tmp_path):
+    from evals.export_onnx import quantize_model
+
+    with pytest.raises(ValueError, match="mode must be"):
+        quantize_model(tmp_path / "a.onnx", tmp_path / "b.onnx", mode="fp8")

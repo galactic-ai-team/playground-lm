@@ -3,8 +3,9 @@
 """Export PlaygroundLM to FP32 ONNX and optionally dynamic INT8.
 
 Uses evals.run_eval.load_model() for checkpoint compatibility.
-Validates FP32 against PyTorch and checks quantized CPU execution.
-Browser compatibility and INT8 quality require separate testing.
+Validates FP32 against PyTorch, checks quantized CPU execution and
+records quantized top-1 agreement / KL vs PyTorch in the manifest.
+Browser compatibility still requires separate testing (onnxruntime-web).
 """
 
 from __future__ import annotations
@@ -245,23 +246,144 @@ def check_onnx(
     }
 
 
+def weight_matmul_nodes(path: Path) -> tuple[list[str], list[str]]:
+    """Split MatMul nodes into (weight, activation-activation) names.
+
+    Attention score/value products (Q@K^T, P@V) multiply two runtime
+    activations. Dynamic per-tensor quantization of those destroys
+    quality (measured on step 10907: mean KL 16 nats, 8/12 top-1), so
+    only MatMuls with a constant initializer operand are quantized.
+    """
+    import onnx
+
+    graph = onnx.load(str(path), load_external_data=False).graph
+    constants = {init.name for init in graph.initializer}
+    constants.update(
+        out for node in graph.node
+        if node.op_type == "Constant" for out in node.output
+    )
+    weight, act_act = [], []
+    for node in graph.node:
+        if node.op_type != "MatMul":
+            continue
+        if any(name in constants for name in node.input):
+            weight.append(node.name)
+        else:
+            act_act.append(node.name)
+    return weight, act_act
+
+
+QUANT_MODES = ("int8", "q4", "q8")
+
+
 def quantize_model(
     source: Path,
     destination: Path,
-) -> None:
-    """Apply dynamic QInt8 quantization to linear operators."""
-    from onnxruntime.quantization import (
-        QuantType,
-        quantize_dynamic,
+    *,
+    mode: str = "int8",
+    block_size: int = 32,
+) -> dict[str, Any]:
+    """Weight-only quantization for the browser demo.
+
+    int8: dynamic QInt8, per-channel, weight MatMuls + embedding Gather
+          (ops: DynamicQuantizeLinear/MatMulInteger, ORT-web wasm OK).
+    q4/q8: block-wise MatMulNBits (block_size) for weight MatMuls plus
+          per-channel int8 embedding Gather.
+    Activation-activation MatMuls (attention) stay FP32.
+    """
+    from onnxruntime.quantization import QuantType, quantize_dynamic
+
+    if mode not in QUANT_MODES:
+        raise ValueError(f"mode must be one of {QUANT_MODES}")
+    source, destination = Path(source), Path(destination)
+    _, act_act = weight_matmul_nodes(source)
+
+    if mode == "int8":
+        quantize_dynamic(
+            model_input=str(source),
+            model_output=str(destination),
+            weight_type=QuantType.QInt8,
+            per_channel=True,
+            op_types_to_quantize=["MatMul", "Gather"],
+            nodes_to_exclude=act_act,
+        )
+        return {
+            "quantization": "dynamic_qint8_per_channel",
+            "excluded_activation_matmuls": len(act_act),
+        }
+
+    import onnx
+    from onnxruntime.quantization.matmul_nbits_quantizer import (
+        MatMulNBitsQuantizer,
     )
 
-    quantize_dynamic(
-        model_input=str(source),
-        model_output=str(destination),
-        weight_type=QuantType.QInt8,
-        per_channel=False,
-        op_types_to_quantize=["MatMul", "Gemm"],
+    bits = 4 if mode == "q4" else 8
+    staged = destination.with_name(destination.name + ".nbits.tmp")
+    quantizer = MatMulNBitsQuantizer(
+        onnx.load(str(source)),
+        block_size=block_size,
+        is_symmetric=True,
+        bits=bits,
     )
+    quantizer.process()
+    quantizer.model.save_model_to_file(
+        str(staged), use_external_data_format=False
+    )
+    try:
+        quantize_dynamic(
+            model_input=str(staged),
+            model_output=str(destination),
+            weight_type=QuantType.QInt8,
+            per_channel=True,
+            op_types_to_quantize=["Gather"],
+        )
+    finally:
+        staged.unlink(missing_ok=True)
+    return {
+        "quantization": f"matmul_nbits_{bits}bit_block{block_size}"
+                        "+gather_qint8",
+        "excluded_activation_matmuls": len(act_act),
+    }
+
+
+def quality_check(
+    path: Path,
+    model: torch.nn.Module,
+    *,
+    lengths: tuple[int, ...] = (1, 8),
+    vocab_size: int | None = None,
+) -> dict[str, Any]:
+    """Compare a (quantized) ONNX artifact with PyTorch.
+
+    Reports, does not assert: top-1 agreement over all positions and
+    mean KL(PyTorch || ONNX) in nats per position.
+    """
+    import onnxruntime as ort
+
+    vocab = effective_vocab_size(model, vocab_size)
+    session = ort.InferenceSession(
+        str(path), providers=["CPUExecutionProvider"]
+    )
+    model.cpu().eval()
+    agree = total = 0
+    kls: list[float] = []
+    for length in lengths:
+        ids = valid_example_ids(length, vocab)
+        actual = session.run(["logits"], {"input_ids": ids})[0][0]
+        with torch.inference_mode():
+            expected = get_logits(
+                model, torch.from_numpy(ids.copy())
+            )[0].float().numpy()
+        agree += int((actual.argmax(-1) == expected.argmax(-1)).sum())
+        total += length
+        lp = expected - np.logaddexp.reduce(expected, -1, keepdims=True)
+        lq = actual - np.logaddexp.reduce(actual, -1, keepdims=True)
+        kls.extend((np.exp(lp) * (lp - lq)).sum(-1).tolist())
+    return {
+        "top1_agreement": agree / total,
+        "positions": total,
+        "mean_kl_nats": float(np.mean(kls)),
+    }
 
 
 def export_bundle(
@@ -273,6 +395,7 @@ def export_bundle(
     vocab_size: int | None = None,
     sample_length: int = 8,
     quantize: bool = True,
+    quant_mode: str = "int8",
 ) -> dict[str, Any]:
     """Export, test and write the artifact manifest."""
     vocab = effective_vocab_size(model, vocab_size)
@@ -324,7 +447,9 @@ def export_bundle(
     }
 
     if quantize:
-        quantize_model(fp32_path, int8_path)
+        quant_info = quantize_model(
+            fp32_path, int8_path, mode=quant_mode
+        )
 
         int8_check = check_onnx(
             int8_path,
@@ -335,7 +460,10 @@ def export_bundle(
         artifacts["int8"] = {
             **artifact_info(int8_path),
             "validation": int8_check,
-            "quantization": "dynamic_qint8",
+            **quant_info,
+            "quality": quality_check(
+                int8_path, model, lengths=lengths, vocab_size=vocab
+            ),
             "browser_verified": False,
             "quality_verified": False,
         }
@@ -403,7 +531,13 @@ def main() -> None:
     parser.add_argument(
         "--quantize",
         action="store_true",
-        help="Also export dynamic INT8 ONNX",
+        help="Also export a quantized ONNX (model.int8.onnx)",
+    )
+    parser.add_argument(
+        "--quant-mode",
+        choices=QUANT_MODES,
+        default="int8",
+        help="int8 = per-channel dynamic QInt8; q4/q8 = MatMulNBits",
     )
     args = parser.parse_args()
 
@@ -422,6 +556,7 @@ def main() -> None:
         context_len=args.context_len,
         sample_length=args.sample_length,
         quantize=args.quantize,
+        quant_mode=args.quant_mode,
     )
 
     print(
