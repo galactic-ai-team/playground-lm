@@ -73,6 +73,9 @@ ENV_OVERRIDES = {
     "PLM_SCHEDULE_START": str(STAGE_B_RESUME_STEP),  # re-warm LR (Claude)
     "PLM_SAMPLING": "permute",  # without replacement (Claude's coverage note)
     "PLM_BATCH_SIZE": "6",              # T4-friendly; grad_accum → 16
+    # GPU quota: 2xT4 bills at 1x wall time (Kaggle product update, 2022).
+    # 1 hour wall on 2xT4 = 1 hour GPU quota. 30h/week quota ≈ 30h wall
+    # on 2xT4. Session max is 12h. At ~4.4s/step, 11h ≈ 9,000 steps.
     "PLM_MAX_SESSION_S": str(11 * 3600),  # under Kaggle's 12h GPU kill
     "PLM_DATA_DIR": str(CONCAT_DIR),      # holds train.bin / val.bin
     "PLM_RUN_DIR": str(RUNS_DIR),
