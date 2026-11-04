@@ -30,7 +30,7 @@
         <h2>1. Checkpoint Selector</h2>
         <span class="mono-tag" id="ckpt-url-tag">manifest.json</span>
       </div>
-      <p class="muted">Select a trained checkpoint from <code>demo/manifest.json</code> to mount in-browser via ONNX Runtime Web (sessions are cached in-memory for instant slider scrubbing).</p>
+      <p class="muted">Scrub the slider or click a step to hot-swap ONNX checkpoints from <code>demo/manifest.json</code> without reloading the page (LRU-cached in memory with neighbor prefetching).</p>
 
       <div id="ckpt-empty-state" class="empty-banner">
         <strong>Stage C training in progress.</strong> Waiting for exported ONNX checkpoints to populate <code>checkpoints[]</code> in <code>demo/manifest.json</code>.
@@ -114,7 +114,7 @@
       </div>
     </section>
 
-    <!-- Right Column: Measured Logit Distribution + Loss Curve + Benchmark Table -->
+    <!-- Right Column: Loss Curve + Measured Logit Distribution + Benchmark Table -->
     <aside class="side-col">
       <section class="panel">
         <div class="section-head">
@@ -142,11 +142,10 @@
           <h2>📊 Measured Benchmark Results</h2>
           <span class="mono-tag">benchmarks.json</span>
         </div>
-        <p class="muted">PlaygroundLM checkpoints compared with OpenAI GPT-2 124M using the same evaluation metrics.</p>
-        <p class="muted" id="bench-source-note" aria-live="polite">Loading benchmark results...</p>
+        <p class="muted" id="bench-source-note">Populated from <code>demo/benchmarks.json</code> and <code>demo/manifest.json</code>.</p>
 
         <div id="bench-empty-state" class="empty-banner">
-          <strong>No benchmark results available.</strong> Run the evaluation pipeline to populate <code>demo/benchmarks.json</code>.
+          <strong>Not evaluated yet.</strong> Benchmark rows are currently empty.
         </div>
 
         <div class="table-wrap hidden" id="bench-table-wrap">
