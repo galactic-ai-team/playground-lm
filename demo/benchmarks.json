@@ -1,0 +1,29 @@
+{
+  "columns": [
+    "val_loss",
+    "perplexity",
+    "hellaswag_acc_norm",
+    "lambada_acc"
+  ],
+  "rows": [
+    {
+      "id": "step_00002035",
+      "label": "PlaygroundLM Stage B — Step 2,035",
+      "step": 2035,
+      "val_loss": 3.928,
+      "perplexity": 50.8,
+      "hellaswag_acc_norm": 0.257,
+      "lambada_acc": 0.091
+    },
+    {
+      "id": "gpt2_124m",
+      "label": "OpenAI GPT-2 124M",
+      "val_loss": 3.255,
+      "perplexity": 25.9,
+      "hellaswag_acc_norm": 0.309,
+      "lambada_acc": 0.326
+    }
+  ],
+  "source_type": "reported_rounded_summary",
+  "notes": "Rounded results reported by the team after Stage B. Replace using scripts/make_benchmark_table.py when complete raw evaluation JSONs are available."
+}
