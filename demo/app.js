@@ -224,7 +224,7 @@ function formatMetricCell(val, colKey = '') {
   if (typeof val === 'number') {
     if (PERCENT_COLUMNS.has(colKey)) {
       const pct = val <= 1.0 && val >= 0 ? val * 100 : val;
-      return `${pct.toFixed(2)}%`;
+      return `${pct.toFixed(1)}%`; // #62: 1 decimal (source values are rounded)
     }
     return Number.isInteger(val) ? val.toLocaleString() : val.toFixed(4).replace(/\.?0+$/, '');
   }
@@ -258,7 +258,11 @@ export async function loadBenchmarkTable(fallbackBenchmarks = null) {
     : [];
 
   if (benchSourceNote) {
+    // Restored from #62: label the rounded reported summary honestly.
     const noteText =
+      (benchData && benchData.source_type === 'reported_rounded_summary'
+        ? 'Reported Stage B results (rounded). Full evaluation reports pending.'
+        : null) ||
       source.note ||
       source.source_note ||
       source.description ||
