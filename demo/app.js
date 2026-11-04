@@ -85,6 +85,54 @@ const benchEmptyState = document.getElementById('bench-empty-state');
 const benchTableWrap = document.getElementById('bench-table-wrap');
 const benchThead = document.getElementById('bench-thead');
 const benchTbody = document.getElementById('bench-tbody');
+const benchSourceNote = document.getElementById('bench-source-note');
+
+const BENCHMARK_COLUMNS = [
+  'val_loss',
+  'perplexity',
+  'hellaswag_acc_norm',
+  'lambada_acc',
+];
+
+function validBenchmarks(value) {
+  return value
+    && Array.isArray(value.columns)
+    && BENCHMARK_COLUMNS.every((key) => value.columns.includes(key))
+    && Array.isArray(value.rows)
+    && value.rows.every((row) =>
+      row && typeof row === 'object'
+      && typeof row.label === 'string'
+      && BENCHMARK_COLUMNS.every((key) =>
+        typeof row[key] === 'number' && Number.isFinite(row[key])
+      )
+    );
+}
+
+async function loadBenchmarkTable() {
+  try {
+    const res = await fetch('./benchmarks.json', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const table = await res.json();
+    if (!validBenchmarks(table)) {
+      throw new Error('Invalid benchmarks.json schema');
+    }
+
+    manifest.benchmarks = {
+      columns: BENCHMARK_COLUMNS,
+      rows: table.rows,
+    };
+
+    benchSourceNote.textContent =
+      table.source_type === 'reported_rounded_summary'
+        ? 'Reported Stage B results (rounded). Full evaluation reports pending.'
+        : 'Full benchmark reports · HellaSwag validation · LAMBADA test';
+  } catch (err) {
+    console.warn('Using benchmark rows from manifest.json:', err);
+    benchSourceNote.textContent =
+      'Benchmark data from manifest.json';
+  }
+}
 
 /**
  * Top-K + Temperature Softmax over a Float32Array slice of vocab logits
@@ -233,6 +281,9 @@ async function loadManifest() {
     console.warn('Could not load ./manifest.json, using empty default contract:', err);
   }
 
+  // The standalone benchmark table takes precedence when available.
+  // Checkpoint URLs and riddle prompts still come from manifest.json.
+  await loadBenchmarkTable();
   renderManifestUI();
 }
 
@@ -327,7 +378,11 @@ function renderManifestUI() {
       for (const col of cols) {
         const td = document.createElement('td');
         const val = Array.isArray(row) ? row[cols.indexOf(col)] : row[col];
-        td.textContent = formatNumber(val);
+        td.textContent =
+          typeof val === 'number'
+          && (col === 'hellaswag_acc_norm' || col === 'lambada_acc')
+            ? `${(val * 100).toFixed(1)}%`
+            : formatNumber(val);
         tr.appendChild(td);
       }
       benchTbody.appendChild(tr);

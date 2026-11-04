@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "report_type": "reported_rounded_summary",
+  "publishable": false,
+  "model": "PlaygroundLM",
+  "checkpoint_id": "stage_b_2035",
+  "step": 2035,
+  "tokens_seen_approx": 200000000,
+  "metrics": {
+    "val_loss": 3.928,
+    "perplexity": 50.8,
+    "hellaswag_acc_norm": 0.257,
+    "lambada_acc": 0.091
+  },
+  "note": "Team-reported rounded Stage B metrics. Not a complete evaluator report."
+}
