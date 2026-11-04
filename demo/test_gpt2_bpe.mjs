@@ -33,6 +33,7 @@ function buildRealGPT2Fixture() {
   vocab['H'] = 39;
   vocab['d'] = 67;
   vocab['e'] = 68;
+  vocab['i'] = 72;
   vocab['l'] = 75;
   vocab['n'] = 77;
   vocab['o'] = 78;
@@ -122,6 +123,25 @@ test('handles <|endoftext|> special token (50256) cleanly', () => {
   const ids = tokenizer.encode(`Hello world${GPT2_EOT_TOKEN}Hello!`);
   assert.deepEqual(ids, [15496, 995, 50256, 15496, 0]);
   assert.equal(tokenizer.decode(ids), `Hello world${GPT2_EOT_TOKEN}Hello!`);
+});
+
+test('falls back to byte tokens when a merged BPE piece is missing from vocab', () => {
+  const { vocab, mergesText } = buildRealGPT2Fixture();
+  // Remove merged token 'in' (259) and 'Hello' (15496) from vocab while keeping their merge rules
+  delete vocab['in'];
+  delete vocab['Hello'];
+
+  const tokenizer = createGPT2Tokenizer(vocab, mergesText);
+
+  // 'in' merges via 'i n', sees 'in' is OOV, and falls back to byte tokens ['i' (72), 'n' (77)]
+  const inIds = tokenizer.encode('in');
+  assert.deepEqual(inIds, [72, 77]);
+  assert.equal(tokenizer.decode(inIds), 'in');
+
+  // 'Hello' merges via 'Hell o', sees 'Hello' is OOV, and falls back to ['H'(39), 'e'(68), 'l'(75), 'l'(75), 'o'(78)]
+  const helloWorldIds = tokenizer.encode('Hello world');
+  assert.deepEqual(helloWorldIds, [39, 68, 75, 75, 78, 995]);
+  assert.equal(tokenizer.decode(helloWorldIds), 'Hello world');
 });
 
 test('round-trips ASCII, multi-line whitespace, contractions, and UTF-8 emojis', () => {
