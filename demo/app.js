@@ -1,46 +1,51 @@
 /**
- * PlaygroundLM Demo App — Strict Manifest & Real ONNX Runtime Web Inference
+ * PlaygroundLM Demo App — Strict Manifest, Real GPT-2 BPE & ONNX Runtime Web Inference
  *
- * Contract:
- * - Reads ./manifest.json:
- *   {
- *     "model": string,
- *     "checkpoints": [{ "step": number, "tokens_seen": number, "url": string }],
- *     "benchmarks": {
- *       "columns": ["val_loss", "perplexity", "hellaswag_acc_norm", "lambada_acc"],
- *       "rows": [...]
- *     },
- *     "riddle_prompts": string[]
- *   }
- * - Zero hard-coded scores or simulated text continuations.
- * - Real ONNX execution using input tensor `input_ids` (int64 [1, seq_len])
- *   and output tensor `logits` (float32 [1, seq_len, vocab_size]).
+ * Capabilities:
+ * - Uses `./gpt2_bpe.js` (`loadGPT2Tokenizer`, `GPT2_EOT_ID`) for exact 50,257-vocab GPT-2 BPE.
+ * - Caches mounted ONNX sessions (`Map<url, InferenceSession>`, LRU max 3) so scrubbing the
+ *   checkpoint slider swaps between Stage B / Stage C checkpoints instantaneously.
+ * - Supports Temperature, Top-K, Top-P (nucleus), and Repetition Penalty sampling over `logits`.
+ * - Renders live training/validation loss curves from `./loss_curve.json` (when present) and
+ *   syncs the active checkpoint marker on the chart.
  */
+
+import { loadGPT2Tokenizer, GPT2_EOT_ID } from './gpt2_bpe.js';
+import { renderLossChart } from './loss_chart.js';
 
 const COLUMN_LABELS = {
   model: 'Model / Step',
   step: 'Step',
+  tokens_seen: 'Tokens Seen',
   val_loss: 'Val Loss (↓)',
   perplexity: 'Perplexity (↓)',
   hellaswag_acc_norm: 'HellaSwag acc_norm (↑)',
   lambada_acc: 'LAMBADA acc (↑)',
 };
 
+const MAX_CACHED_SESSIONS = 3;
+
 // State
 let manifest = {
   model: 'PlaygroundLM',
   checkpoints: [],
-  benchmarks: { columns: ['val_loss', 'perplexity', 'hellaswag_acc_norm', 'lambada_acc'], rows: [] },
+  benchmarks: {
+    columns: ['val_loss', 'perplexity', 'hellaswag_acc_norm', 'lambada_acc'],
+    rows: [],
+  },
   riddle_prompts: [],
 };
+let lossCurveData = null;
+let activeCheckpointStep = null;
 let riddleIndex = 0;
 let ortModule = null;
 let onnxSession = null;
 let loadedCheckpointUrl = null;
+const sessionCache = new Map(); // url -> InferenceSession (LRU order)
 let hasWebGPU = false;
 let isGenerating = false;
 let stopRequested = false;
-let tokenizer = null; // Optional { encode(str): number[], decode(ids): string, idToToken(id): string }
+let tokenizer = null;
 
 // DOM Elements
 const modelTitleEl = document.getElementById('model-title');
@@ -70,6 +75,10 @@ const tempSlider = document.getElementById('temp-slider');
 const tempVal = document.getElementById('temp-val');
 const topkSlider = document.getElementById('topk-slider');
 const topkVal = document.getElementById('topk-val');
+const toppSlider = document.getElementById('topp-slider');
+const toppVal = document.getElementById('topp-val');
+const reppenSlider = document.getElementById('reppen-slider');
+const reppenVal = document.getElementById('reppen-val');
 const maxTokensSlider = document.getElementById('max-tokens-slider');
 const maxTokensVal = document.getElementById('max-tokens-val');
 const btnGenerate = document.getElementById('btn-generate');
@@ -80,73 +89,40 @@ const tokSpeedEl = document.getElementById('tok-speed');
 const outputStream = document.getElementById('output-stream');
 const logitBars = document.getElementById('logit-bars');
 const inspectedTokenTag = document.getElementById('inspected-token-tag');
+const lossChartContainer = document.getElementById('loss-chart-container');
 
 const benchEmptyState = document.getElementById('bench-empty-state');
 const benchTableWrap = document.getElementById('bench-table-wrap');
 const benchThead = document.getElementById('bench-thead');
 const benchTbody = document.getElementById('bench-tbody');
-const benchSourceNote = document.getElementById('bench-source-note');
-
-const BENCHMARK_COLUMNS = [
-  'val_loss',
-  'perplexity',
-  'hellaswag_acc_norm',
-  'lambada_acc',
-];
-
-function validBenchmarks(value) {
-  return value
-    && Array.isArray(value.columns)
-    && BENCHMARK_COLUMNS.every((key) => value.columns.includes(key))
-    && Array.isArray(value.rows)
-    && value.rows.every((row) =>
-      row && typeof row === 'object'
-      && typeof row.label === 'string'
-      && BENCHMARK_COLUMNS.every((key) =>
-        typeof row[key] === 'number' && Number.isFinite(row[key])
-      )
-    );
-}
-
-async function loadBenchmarkTable() {
-  try {
-    const res = await fetch('./benchmarks.json', { cache: 'no-store' });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-    const table = await res.json();
-    if (!validBenchmarks(table)) {
-      throw new Error('Invalid benchmarks.json schema');
-    }
-
-    manifest.benchmarks = {
-      columns: BENCHMARK_COLUMNS,
-      rows: table.rows,
-    };
-
-    benchSourceNote.textContent =
-      table.source_type === 'reported_rounded_summary'
-        ? 'Reported Stage B results (rounded). Full evaluation reports pending.'
-        : 'Full benchmark reports · HellaSwag validation · LAMBADA test';
-  } catch (err) {
-    console.warn('Using benchmark rows from manifest.json:', err);
-    benchSourceNote.textContent =
-      'Benchmark data from manifest.json';
-  }
-}
 
 /**
- * Top-K + Temperature Softmax over a Float32Array slice of vocab logits
+ * Applies repetition penalty, Temperature scaling, Top-K filtering, and Top-P (nucleus)
+ * cutoff over a Float32Array slice of vocabulary logits.
  */
-export function sampleTopKLogits(logitsSlice, temperature = 0.8, topK = 40) {
+export function sampleLogits(
+  logitsSlice,
+  {
+    temperature = 0.8,
+    topK = 40,
+    topP = 0.92,
+    repetitionPenalty = 1.1,
+    recentTokenIds = [],
+  } = {}
+) {
   const temp = Math.max(temperature, 1e-3);
   const k = Math.max(1, Math.min(topK, logitsSlice.length));
+  const repPen = Math.max(1.0, repetitionPenalty);
+  const seenSet = repPen > 1.0001 ? new Set(recentTokenIds.slice(-64)) : null;
 
-  // Maintain a simple sorted top-K buffer to avoid sorting all 50,257 vocab items when K is small
   const top = [];
   let minAllowed = -Infinity;
 
   for (let i = 0; i < logitsSlice.length; i++) {
-    const val = logitsSlice[i];
+    let val = logitsSlice[i];
+    if (seenSet && seenSet.has(i)) {
+      val = val > 0 ? val / repPen : val * repPen;
+    }
     if (top.length < k || val > minAllowed) {
       top.push({ id: i, logit: val / temp });
       top.sort((a, b) => b.logit - a.logit);
@@ -165,11 +141,23 @@ export function sampleTopKLogits(logitsSlice, temperature = 0.8, topK = 40) {
     item.prob /= sumExp;
   }
 
-  // Multinomial sample from top-K distribution
-  const r = Math.random();
-  let acc = 0;
-  let chosenId = top[0].id;
+  // Top-P (nucleus) filtering over the sorted Top-K candidates
+  const pCutoff = Math.max(0.05, Math.min(1.0, topP));
+  const nucleus = [];
+  let cumProb = 0;
   for (const item of top) {
+    nucleus.push(item);
+    cumProb += item.prob;
+    if (cumProb >= pCutoff && nucleus.length >= 1) break;
+  }
+
+  // Renormalize nucleus probabilities for sampling
+  let nucleusSum = 0;
+  for (const item of nucleus) nucleusSum += item.prob;
+  const r = Math.random() * nucleusSum;
+  let acc = 0;
+  let chosenId = nucleus[0].id;
+  for (const item of nucleus) {
     acc += item.prob;
     if (r <= acc) {
       chosenId = item.id;
@@ -199,92 +187,80 @@ async function detectWebGPU() {
 }
 
 /**
- * Try loading optional tokenizer artifacts exported by GPT-6 (./tokenizer.json or ./vocab.json)
+ * Loads exact GPT-2 byte-level BPE via `./gpt2_bpe.js` (`vocab.json`+`merges.txt` or `tokenizer.json`).
  */
-async function tryLoadTokenizer() {
-  try {
-    const res = await fetch('./tokenizer.json', { cache: 'no-store' });
-    if (!res.ok) throw new Error('No tokenizer.json');
-    const data = await res.json();
-    const vocabObj = data.model?.vocab || data.vocab || {};
-    const tokenToId = new Map(Object.entries(vocabObj).map(([k, v]) => [k, Number(v)]));
-    const idToTokenMap = new Map(Object.entries(vocabObj).map(([k, v]) => [Number(v), k]));
+async function initTokenizer() {
+  const candidates = [
+    ['./vocab.json', './merges.txt'],
+    ['./encoder.json', './merges.txt'],
+    ['./tokenizer.json', './merges.txt'],
+  ];
 
-    tokenizer = {
-      encode(text) {
-        // Greedy longest-prefix match against loaded vocabulary with byte fallback
-        const ids = [];
-        let i = 0;
-        const normalized = text.replace(/ /g, 'Ġ');
-        while (i < normalized.length) {
-          let matched = false;
-          for (let len = Math.min(24, normalized.length - i); len >= 1; len--) {
-            const sub = normalized.slice(i, i + len);
-            if (tokenToId.has(sub)) {
-              ids.push(tokenToId.get(sub));
-              i += len;
-              matched = true;
-              break;
-            }
-          }
-          if (!matched) {
-            ids.push(normalized.charCodeAt(i) % Math.max(idToTokenMap.size, 256));
-            i += 1;
-          }
-        }
-        return ids.length ? ids : [0];
-      },
-      decode(id) {
-        const raw = idToTokenMap.get(Number(id));
-        if (raw === undefined) return `<#${id}>`;
-        return raw.replace(/Ġ/g, ' ').replace(/Ċ/g, '\n');
-      },
-    };
-    tokenizerStatus.textContent = `(loaded tokenizer.json · ${idToTokenMap.size.toLocaleString()} tokens)`;
-  } catch {
-    // Fallback to raw UTF-8 byte encoding until tokenizer.json is exported
-    const encoder = new TextEncoder();
-    const decoder = new TextDecoder();
-    tokenizer = {
-      encode(text) {
-        const bytes = Array.from(encoder.encode(text));
-        return bytes.length ? bytes : [32];
-      },
-      decode(id) {
-        const num = Number(id);
-        if (num >= 32 && num <= 126) return decoder.decode(new Uint8Array([num]));
-        if (num === 10) return '\n';
-        return `[tok:${num}]`;
-      },
-    };
-    tokenizerStatus.textContent = '(tokenizer.json not found yet — using UTF-8 byte ID fallback)';
+  for (const [vUrl, mUrl] of candidates) {
+    try {
+      tokenizer = await loadGPT2Tokenizer(vUrl, mUrl);
+      tokenizerStatus.textContent = `(GPT-2 BPE · ${tokenizer.vocabSize.toLocaleString()} tokens · EOT ${tokenizer.eotId})`;
+      return;
+    } catch {
+      // Try next candidate path
+    }
   }
+
+  // Byte fallback only if vocab/merges files have not been deployed to demo/ yet
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  tokenizer = {
+    vocabSize: 256,
+    eotId: GPT2_EOT_ID,
+    encode(text) {
+      const bytes = Array.from(encoder.encode(text));
+      return bytes.length ? bytes : [32];
+    },
+    decode(ids) {
+      const list = typeof ids === 'number' ? [ids] : Array.from(ids || []);
+      const bytes = list.filter((n) => n >= 0 && n <= 255);
+      return decoder.decode(new Uint8Array(bytes));
+    },
+  };
+  tokenizerStatus.textContent = '(vocab.json/merges.txt not deployed yet — UTF-8 byte fallback)';
 }
 
-async function loadManifest() {
+async function loadManifestAndLossCurve() {
   try {
     const res = await fetch('./manifest.json', { cache: 'no-store' });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const parsed = await res.json();
-    manifest = {
-      model: parsed.model || 'PlaygroundLM',
-      checkpoints: Array.isArray(parsed.checkpoints) ? parsed.checkpoints : [],
-      benchmarks: {
-        columns: Array.isArray(parsed.benchmarks?.columns)
-          ? parsed.benchmarks.columns
-          : ['val_loss', 'perplexity', 'hellaswag_acc_norm', 'lambada_acc'],
-        rows: Array.isArray(parsed.benchmarks?.rows) ? parsed.benchmarks.rows : [],
-      },
-      riddle_prompts: Array.isArray(parsed.riddle_prompts) ? parsed.riddle_prompts : [],
-    };
+    if (res.ok) {
+      const parsed = await res.json();
+      manifest = {
+        model: parsed.model || 'PlaygroundLM',
+        checkpoints: Array.isArray(parsed.checkpoints) ? parsed.checkpoints : [],
+        benchmarks: {
+          columns: Array.isArray(parsed.benchmarks?.columns)
+            ? parsed.benchmarks.columns
+            : ['val_loss', 'perplexity', 'hellaswag_acc_norm', 'lambada_acc'],
+          rows: Array.isArray(parsed.benchmarks?.rows) ? parsed.benchmarks.rows : [],
+        },
+        riddle_prompts: Array.isArray(parsed.riddle_prompts) ? parsed.riddle_prompts : [],
+      };
+    }
   } catch (err) {
-    console.warn('Could not load ./manifest.json, using empty default contract:', err);
+    console.warn('Could not load ./manifest.json:', err);
   }
 
-  // The standalone benchmark table takes precedence when available.
-  // Checkpoint URLs and riddle prompts still come from manifest.json.
-  await loadBenchmarkTable();
+  try {
+    const lossRes = await fetch('./loss_curve.json', { cache: 'no-store' });
+    if (lossRes.ok) {
+      lossCurveData = await lossRes.json();
+    }
+  } catch {
+    lossCurveData = null;
+  }
+
   renderManifestUI();
+  if (lossChartContainer) {
+    renderLossChart(lossChartContainer, lossCurveData, {
+      activeStep: activeCheckpointStep,
+    });
+  }
 }
 
 function formatNumber(val) {
@@ -301,11 +277,11 @@ function renderManifestUI() {
 
   const ckpts = manifest.checkpoints || [];
   if (ckpts.length === 0) {
-    modelBadgeEl.textContent = 'Untrained (0 Checkpoints)';
+    modelBadgeEl.textContent = 'Training in Progress (0 Exported Checkpoints)';
     ckptEmptyState.classList.remove('hidden');
     ckptControls.classList.add('hidden');
-    metaStep.textContent = 'Not trained yet';
-    metaTokens.textContent = '0';
+    metaStep.textContent = 'Stage C running';
+    metaTokens.textContent = '—';
   } else {
     modelBadgeEl.textContent = `${ckpts.length} Checkpoint${ckpts.length === 1 ? '' : 's'}`;
     ckptEmptyState.classList.add('hidden');
@@ -319,7 +295,8 @@ function renderManifestUI() {
       const btn = document.createElement('button');
       btn.className = 'stage-btn';
       btn.dataset.idx = String(idx);
-      btn.innerHTML = `Step ${Number(c.step ?? idx).toLocaleString()}<br><small>${Number(c.tokens_seen ?? 0).toLocaleString()} tok</small>`;
+      const label = c.label ? `${c.label}<br>` : '';
+      btn.innerHTML = `${label}Step ${Number(c.step ?? idx).toLocaleString()}<br><small>${Number(c.tokens_seen ?? 0).toLocaleString()} tok</small>`;
       btn.addEventListener('click', () => selectCheckpoint(idx));
       ckptStageButtons.appendChild(btn);
     });
@@ -341,7 +318,12 @@ function renderManifestUI() {
   }
 
   // Benchmarks Table
-  const cols = manifest.benchmarks?.columns || ['val_loss', 'perplexity', 'hellaswag_acc_norm', 'lambada_acc'];
+  const cols = manifest.benchmarks?.columns || [
+    'val_loss',
+    'perplexity',
+    'hellaswag_acc_norm',
+    'lambada_acc',
+  ];
   const rows = manifest.benchmarks?.rows || [];
 
   if (rows.length === 0) {
@@ -351,7 +333,6 @@ function renderManifestUI() {
     benchEmptyState.classList.add('hidden');
     benchTableWrap.classList.remove('hidden');
 
-    // Determine row identifier column (e.g. model, name, label, or step)
     const trHead = document.createElement('tr');
     const thName = document.createElement('th');
     thName.textContent = 'Model / Checkpoint';
@@ -371,18 +352,18 @@ function renderManifestUI() {
       if (row.step !== undefined) tr.dataset.step = String(row.step);
 
       const tdLabel = document.createElement('td');
-      const rowName = row.model || row.name || row.label || (row.step !== undefined ? `Step ${row.step}` : 'Run');
+      const rowName =
+        row.model ||
+        row.name ||
+        row.label ||
+        (row.step !== undefined ? `Step ${row.step}` : 'Run');
       tdLabel.textContent = String(rowName);
       tr.appendChild(tdLabel);
 
       for (const col of cols) {
         const td = document.createElement('td');
         const val = Array.isArray(row) ? row[cols.indexOf(col)] : row[col];
-        td.textContent =
-          typeof val === 'number'
-          && (col === 'hellaswag_acc_norm' || col === 'lambada_acc')
-            ? `${(val * 100).toFixed(1)}%`
-            : formatNumber(val);
+        td.textContent = formatNumber(val);
         tr.appendChild(td);
       }
       benchTbody.appendChild(tr);
@@ -400,13 +381,24 @@ async function selectCheckpoint(index) {
     btn.classList.toggle('active', Number(btn.dataset.idx) === index);
   });
 
-  metaStep.textContent = ckpt.step !== undefined ? Number(ckpt.step).toLocaleString() : '—';
-  metaTokens.textContent = ckpt.tokens_seen !== undefined ? Number(ckpt.tokens_seen).toLocaleString() : '—';
+  activeCheckpointStep = ckpt.step !== undefined ? Number(ckpt.step) : null;
+  metaStep.textContent = activeCheckpointStep !== null ? activeCheckpointStep.toLocaleString() : '—';
+  metaTokens.textContent =
+    ckpt.tokens_seen !== undefined ? Number(ckpt.tokens_seen).toLocaleString() : '—';
   ckptUrlTag.textContent = ckpt.url || 'no url';
 
   document.querySelectorAll('#bench-tbody tr').forEach((tr) => {
-    tr.classList.toggle('active-stage-row', tr.dataset.step !== undefined && Number(tr.dataset.step) === Number(ckpt.step));
+    tr.classList.toggle(
+      'active-stage-row',
+      tr.dataset.step !== undefined && Number(tr.dataset.step) === activeCheckpointStep
+    );
   });
+
+  if (lossChartContainer && lossCurveData) {
+    renderLossChart(lossChartContainer, lossCurveData, {
+      activeStep: activeCheckpointStep,
+    });
+  }
 
   if (ckpt.url) {
     await mountOnnxSession(ckpt.url);
@@ -420,7 +412,19 @@ async function selectCheckpoint(index) {
 
 async function mountOnnxSession(url) {
   if (!url) return;
-  if (onnxSession && loadedCheckpointUrl === url) return;
+
+  // Instant swap if already cached in LRU session map
+  if (sessionCache.has(url)) {
+    const cached = sessionCache.get(url);
+    sessionCache.delete(url);
+    sessionCache.set(url, cached);
+    onnxSession = cached;
+    loadedCheckpointUrl = url;
+    metaSession.textContent = `Cached (${hasWebGPU ? 'WebGPU' : 'WASM'})`;
+    ckptUrlTag.textContent = url.split('/').pop() || url;
+    btnGenerate.disabled = false;
+    return;
+  }
 
   metaSession.textContent = 'Loading ONNX...';
   btnGenerate.disabled = true;
@@ -429,9 +433,17 @@ async function mountOnnxSession(url) {
     if (!ortModule) {
       ortModule = await import('https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.mjs');
     }
-    onnxSession = await ortModule.InferenceSession.create(url, {
+    const session = await ortModule.InferenceSession.create(url, {
       executionProviders: hasWebGPU ? ['webgpu', 'wasm'] : ['wasm'],
     });
+
+    if (sessionCache.size >= MAX_CACHED_SESSIONS) {
+      const oldestKey = sessionCache.keys().next().value;
+      sessionCache.delete(oldestKey);
+    }
+    sessionCache.set(url, session);
+
+    onnxSession = session;
     loadedCheckpointUrl = url;
     metaSession.textContent = `Mounted (${hasWebGPU ? 'WebGPU' : 'WASM'})`;
     ckptUrlTag.textContent = url.split('/').pop() || url;
@@ -479,6 +491,8 @@ async function runOnnxGeneration() {
   const promptText = promptInput.value || ' ';
   const temperature = parseFloat(tempSlider.value);
   const topK = parseInt(topkSlider.value, 10);
+  const topP = toppSlider ? parseFloat(toppSlider.value) : 0.92;
+  const repetitionPenalty = reppenSlider ? parseFloat(reppenSlider.value) : 1.1;
   const maxNewTokens = parseInt(maxTokensSlider.value, 10);
 
   outputStream.innerHTML = '';
@@ -488,6 +502,7 @@ async function runOnnxGeneration() {
   outputStream.appendChild(promptSpan);
 
   const inputIds = tokenizer.encode(promptText);
+  const eotId = tokenizer.eotId ?? GPT2_EOT_ID;
   const stepHistory = [];
   const t0 = performance.now();
 
@@ -495,26 +510,38 @@ async function runOnnxGeneration() {
     for (let step = 0; step < maxNewTokens; step++) {
       if (stopRequested) break;
 
-      // Context window cap at 1024 tokens
       const contextIds = inputIds.slice(-1024);
       const bigIntIds = BigInt64Array.from(contextIds.map((id) => BigInt(id)));
       const inputTensor = new ortModule.Tensor('int64', bigIntIds, [1, contextIds.length]);
 
-      const feeds = { input_ids: inputTensor };
-      const results = await onnxSession.run(feeds);
-
+      const results = await onnxSession.run({ input_ids: inputTensor });
       const logitsTensor = results.logits ?? results[Object.keys(results)[0]];
       if (!logitsTensor) {
         throw new Error('ONNX output did not contain a "logits" tensor.');
       }
 
-      const dims = logitsTensor.dims; // Expected: [1, seq_len, vocab_size] or [seq_len, vocab_size]
+      const dims = logitsTensor.dims;
       const vocabSize = dims[dims.length - 1];
       const seqLen = dims.length >= 2 ? dims[dims.length - 2] : 1;
       const lastPosOffset = (seqLen - 1) * vocabSize;
-      const lastTokenLogits = logitsTensor.data.subarray(lastPosOffset, lastPosOffset + vocabSize);
+      const lastTokenLogits = logitsTensor.data.subarray(
+        lastPosOffset,
+        lastPosOffset + vocabSize
+      );
 
-      const { chosenId, topCandidates } = sampleTopKLogits(lastTokenLogits, temperature, topK);
+      const { chosenId, topCandidates } = sampleLogits(lastTokenLogits, {
+        temperature,
+        topK,
+        topP,
+        repetitionPenalty,
+        recentTokenIds: inputIds,
+      });
+
+      if (chosenId === eotId) {
+        renderLogitBars(topCandidates, `step #${step + 1} (<|endoftext|> reached)`);
+        break;
+      }
+
       inputIds.push(chosenId);
 
       const decodedPiece = tokenizer.decode(chosenId);
@@ -538,7 +565,6 @@ async function runOnnxGeneration() {
       const elapsedSec = Math.max((performance.now() - t0) / 1000, 0.001);
       tokSpeedEl.textContent = `${((step + 1) / elapsedSec).toFixed(1)} tok/s`;
 
-      // Yield to browser paint loop
       await new Promise((r) => requestAnimationFrame(r));
     }
   } catch (err) {
@@ -558,6 +584,12 @@ ckptSlider.addEventListener('input', (e) => selectCheckpoint(Number(e.target.val
 
 tempSlider.addEventListener('input', (e) => (tempVal.textContent = Number(e.target.value).toFixed(2)));
 topkSlider.addEventListener('input', (e) => (topkVal.textContent = e.target.value));
+if (toppSlider) {
+  toppSlider.addEventListener('input', (e) => (toppVal.textContent = Number(e.target.value).toFixed(2)));
+}
+if (reppenSlider) {
+  reppenSlider.addEventListener('input', (e) => (reppenVal.textContent = Number(e.target.value).toFixed(2)));
+}
 maxTokensSlider.addEventListener('input', (e) => (maxTokensVal.textContent = e.target.value));
 
 btnRiddle.addEventListener('click', () => {
@@ -584,5 +616,5 @@ btnStop.addEventListener('click', () => {
 
 // Boot
 await detectWebGPU();
-await tryLoadTokenizer();
-await loadManifest();
+await initTokenizer();
+await loadManifestAndLossCurve();

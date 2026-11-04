@@ -14,7 +14,7 @@
       <span class="logo-orb">🛸</span>
       <div>
         <h1><span id="model-title">PlaygroundLM</span> <span class="badge" id="model-badge">Loading manifest...</span></h1>
-        <p class="subtitle">Galactic AI Team · From-Scratch GPT-2-Small Class Model · Measured Checkpoints Only</p>
+        <p class="subtitle">Galactic AI Team · From-Scratch GPT-2-Small Class Model · Exact Byte-Level BPE · Measured Checkpoints Only</p>
       </div>
     </div>
     <div class="runtime-status" id="runtime-pill">
@@ -30,10 +30,10 @@
         <h2>1. Checkpoint Selector</h2>
         <span class="mono-tag" id="ckpt-url-tag">manifest.json</span>
       </div>
-      <p class="muted">Select a trained checkpoint from <code>demo/manifest.json</code> to mount in-browser via ONNX Runtime Web.</p>
+      <p class="muted">Select a trained checkpoint from <code>demo/manifest.json</code> to mount in-browser via ONNX Runtime Web (sessions are cached in-memory for instant slider scrubbing).</p>
 
       <div id="ckpt-empty-state" class="empty-banner">
-        <strong>No trained checkpoints yet.</strong> Waiting for Kaggle training runs to populate <code>checkpoints[]</code> in <code>demo/manifest.json</code>.
+        <strong>Stage C training in progress.</strong> Waiting for exported ONNX checkpoints to populate <code>checkpoints[]</code> in <code>demo/manifest.json</code>.
       </div>
 
       <div id="ckpt-controls" class="slider-box hidden">
@@ -88,7 +88,15 @@
           <input type="range" id="topk-slider" min="1" max="100" step="1" value="40" />
         </div>
         <div class="param-control">
-          <label for="max-tokens-slider">Max New Tokens: <b id="max-tokens-val">48</b></label>
+          <label for="topp-slider">Top-P: <b id="topp-val">0.92</b></label>
+          <input type="range" id="topp-slider" min="0.1" max="1.0" step="0.02" value="0.92" />
+        </div>
+        <div class="param-control">
+          <label for="reppen-slider">Rep Pen: <b id="reppen-val">1.10</b></label>
+          <input type="range" id="reppen-slider" min="1.0" max="1.4" step="0.02" value="1.10" />
+        </div>
+        <div class="param-control">
+          <label for="max-tokens-slider">Max Tokens: <b id="max-tokens-val">48</b></label>
           <input type="range" id="max-tokens-slider" min="8" max="128" step="8" value="48" />
         </div>
         <div class="action-buttons">
@@ -98,7 +106,7 @@
       </div>
 
       <div class="output-header">
-        <span>Model Output <small class="muted" id="tokenizer-status">(awaiting checkpoint &amp; tokenizer)</small></span>
+        <span>Model Output <small class="muted" id="tokenizer-status">(loading GPT-2 BPE...)</small></span>
         <span class="tok-speed" id="tok-speed">— tok/s</span>
       </div>
       <div class="output-stream" id="output-stream" aria-live="polite">
@@ -106,8 +114,18 @@
       </div>
     </section>
 
-    <!-- Right Column: Measured Logit Distribution + Manifest Benchmark Table -->
+    <!-- Right Column: Measured Logit Distribution + Loss Curve + Benchmark Table -->
     <aside class="side-col">
+      <section class="panel">
+        <div class="section-head">
+          <h2>📉 Training &amp; Validation Loss Curve</h2>
+          <span class="mono-tag">loss_curve.json</span>
+        </div>
+        <div id="loss-chart-container">
+          <div class="empty-banner">Loading <code>loss_curve.json</code>...</div>
+        </div>
+      </section>
+
       <section class="panel">
         <div class="section-head">
           <h2>🔍 Top-5 Next-Token Logits</h2>
@@ -122,13 +140,12 @@
       <section class="panel">
         <div class="section-head">
           <h2>📊 Measured Benchmark Results</h2>
-          <span class="mono-tag">benchmarks.json</span>
+          <span class="mono-tag">manifest.json</span>
         </div>
-        <p class="muted">PlaygroundLM checkpoints compared with OpenAI GPT-2 124M using the same evaluation metrics.</p>
-        <p class="muted" id="bench-source-note" aria-live="polite">Loading benchmark results...</p>
+        <p class="muted">Populated strictly from <code>benchmarks.columns</code> and <code>benchmarks.rows</code> in <code>demo/manifest.json</code>.</p>
 
         <div id="bench-empty-state" class="empty-banner">
-          <strong>No benchmark results available.</strong> Run the evaluation pipeline to populate <code>demo/benchmarks.json</code>.
+          <strong>Not evaluated yet.</strong> <code>benchmarks.rows</code> in <code>demo/manifest.json</code> is currently empty.
         </div>
 
         <div class="table-wrap hidden" id="bench-table-wrap">
