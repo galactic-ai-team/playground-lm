@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "report_type": "reported_rounded_summary",
+  "publishable": true,
+  "model": "PlaygroundLM",
+  "checkpoint_id": "stage_c_final_31101",
+  "step": 31101,
+  "tokens_seen_approx": 3060000000,
+  "metrics": {
+    "val_loss": 3.174,
+    "perplexity": 23.9,
+    "hellaswag_acc_norm": 0.300,
+    "lambada_acc": 0.230
+  },
+  "note": "Rounded from plm-stage-c-final-eval v1 complete report (Stage C val.bin, release stage-c-final-step31101). Exact: val_loss 3.1742079041500078, ppl 23.90787503770528, hellaswag 0.30033857797251545 (3016/10042), lambada 0.2297690665631671 (1184/5153). Below GPT-2 124M on same-split val loss (3.279); HellaSwag/LAMBADA still trail GPT-2 (30.9%/32.6%)."
+}
