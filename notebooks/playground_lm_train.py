@@ -41,7 +41,7 @@
 #
 # | Env var | Meaning | Default |
 # |---|---|---|
-# | `PLM_STAGE` | Training stage preset: `A`, `B`, `C` — sets `max_steps`, `warmup_steps`, milestones | unset |
+# | `PLM_STAGE` | Training stage preset: `A`, `B`, `C`, `D` — sets `max_steps`, `warmup_steps`, milestones (and for `D`, the fine-tune LR, schedule start, batch and eval interval) | unset |
 # | `PLM_MAX_STEPS` | Override the stage's `max_steps` | stage default, else 200_000 |
 # | `PLM_WARMUP` | Override the stage's `warmup_steps` | stage default, else 2000 |
 # | `PLM_BATCH_SIZE` | Micro-batch size per GPU; `grad_accum_steps` is adjusted to keep the global effective batch at 96 sequences | `12` (P100); use `6` on T4 |
@@ -52,7 +52,10 @@
 # | `PLM_RELEASE_TAG` | Release tag for checkpoints | `v0.1-checkpoints` |
 # | `PLM_RUN_ID` | Manifest run id | `plm-001` |
 # | `PLM_COMPILE` | Set to `1` to enable `torch.compile` | unset (off) |
-# | `PLM_SCHEDULE_START` | Step the LR warmup/cosine starts from (a stage resuming another stage's checkpoint, e.g. `2035` for Stage C) | `0` |
+# | `PLM_SCHEDULE_START` | Step the LR warmup/cosine starts from (a stage resuming another stage's checkpoint, e.g. `2035` for Stage C) | stage preset (`31101` for `D`), else `0` |
+# | `PLM_LR` | Peak learning rate | stage preset (`6e-5` for `D`), else `6e-4` |
+# | `PLM_EFFECTIVE_BATCH` | Global sequences per optimizer step (all GPUs) | stage preset (`24` for `D`), else `96` |
+# | `PLM_EVAL_INTERVAL` | Validation every N updates | stage preset (`25` for `D`), else `500` |
 # | `PLM_SAMPLING` | `permute`: train windows without replacement (one pass covers every non-overlapping window; resume-exact from `PLM_SCHEDULE_START`). Default: random windows with replacement | unset |
 # | `PLM_DIST_TIMEOUT_MIN` | Multi-GPU only: how long a GPU waits for the other (e.g. during a rank-0 checkpoint upload) before giving up | `60` |
 #
@@ -126,6 +129,33 @@ MODEL_CONFIG = {
     "context_len": 1024,
 }
 
+# --- Stage presets + env overrides (logic in stage_config.py) ----------
+# Resolved before the batch size, because a stage can set its own global
+# batch (Stage D: 24 sequences) as well as LR, schedule start and eval
+# interval. Env vars win over the stage preset; unset means the defaults.
+from playground_lm.train.stage_config import resolve_stage_plan, warmup_warning
+
+
+def _env_num(name, kind):
+    value = os.environ.get(name)
+    return kind(value) if value else None
+
+
+_plan = resolve_stage_plan(
+    stage=os.environ.get("PLM_STAGE"),
+    max_steps_override=_env_num("PLM_MAX_STEPS", int),
+    warmup_override=_env_num("PLM_WARMUP", int),
+    lr_override=_env_num("PLM_LR", float),
+    schedule_start_override=_env_num("PLM_SCHEDULE_START", int),
+    effective_batch_override=_env_num("PLM_EFFECTIVE_BATCH", int),
+    eval_interval_override=_env_num("PLM_EVAL_INTERVAL", int),
+)
+MAX_STEPS = _plan.max_steps
+WARMUP_STEPS = _plan.warmup_steps
+SAVE_MILESTONES = _plan.milestones
+stage = _plan.stage
+PEAK_LR = _plan.lr if _plan.lr is not None else 6e-4
+
 # --- Batch size + gradient accumulation --------------------------------
 # TARGET_EFFECTIVE_BATCH is the GLOBAL effective batch: sequences per
 # optimizer step summed over all GPUs. Keeping it fixed (Claude's review)
@@ -133,7 +163,7 @@ MODEL_CONFIG = {
 # tokens_per_step stay the same whether a session runs on one T4 or two, so
 
 # a run can resume on either. Two GPUs halve the per-GPU accumulation instead.
-TARGET_EFFECTIVE_BATCH = 96
+TARGET_EFFECTIVE_BATCH = _plan.effective_batch or 96
 DEFAULT_MICRO_BATCH = 12
 micro_batch = int(os.environ.get("PLM_BATCH_SIZE", str(DEFAULT_MICRO_BATCH)))
 if micro_batch <= 0:
@@ -148,26 +178,6 @@ if TARGET_EFFECTIVE_BATCH % _per_micro_step != 0:
         f"{[d for d in range(1, TARGET_EFFECTIVE_BATCH + 1) if TARGET_EFFECTIVE_BATCH % (d * WORLD_SIZE) == 0]}"
     )
 grad_accum = TARGET_EFFECTIVE_BATCH // _per_micro_step
-
-# --- Stage presets + env overrides (logic in stage_config.py) ----------
-from playground_lm.train.stage_config import resolve_stage_plan, warmup_warning
-
-_plan = resolve_stage_plan(
-    stage=os.environ.get("PLM_STAGE"),
-    max_steps_override=(
-        int(os.environ["PLM_MAX_STEPS"])
-        if os.environ.get("PLM_MAX_STEPS") else None
-    ),
-    warmup_override=(
-        int(os.environ["PLM_WARMUP"])
-        if os.environ.get("PLM_WARMUP") else None
-    ),
-)
-MAX_STEPS = _plan.max_steps
-
-WARMUP_STEPS = _plan.warmup_steps
-SAVE_MILESTONES = _plan.milestones
-stage = _plan.stage
 
 _warn = warmup_warning(_plan)
 if _warn:
@@ -199,7 +209,7 @@ TRAIN_CONFIG = {
     "grad_accum_steps": grad_accum,
 
     "context_len": MODEL_CONFIG["context_len"],
-    "lr": 6e-4,
+    "lr": PEAK_LR,
     "warmup_steps": WARMUP_STEPS,
     "weight_decay": 0.1,
     "grad_clip": 1.0,
@@ -209,9 +219,13 @@ if MAX_SESSION_S is not None:
 # Per-stage LR schedule (Claude): a stage resuming from an earlier stage's
 # checkpoint (Stage C from Stage B's step 2035) warms up again from this step
 # instead of jumping straight to ~peak LR. Fixed per stage, not per session.
-if os.environ.get("PLM_SCHEDULE_START"):
-    TRAIN_CONFIG["schedule_start_step"] = int(os.environ["PLM_SCHEDULE_START"])
-    _log(f"[train] PLM_SCHEDULE_START → schedule_start_step = {TRAIN_CONFIG['schedule_start_step']}")
+if _plan.schedule_start is not None:
+    TRAIN_CONFIG["schedule_start_step"] = _plan.schedule_start
+    _log(f"[train] schedule_start_step = {_plan.schedule_start} (PLM_SCHEDULE_START or stage preset)")
+if _plan.eval_interval is not None:
+    TRAIN_CONFIG["eval_interval"] = _plan.eval_interval
+if _plan.lr is not None or _plan.effective_batch is not None:
+    _log(f"[train] peak lr = {PEAK_LR:g}, global batch = {TARGET_EFFECTIVE_BATCH} sequences")
 
 MANIFEST_CONFIG = {
     "model": MODEL_CONFIG,
