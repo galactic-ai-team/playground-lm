@@ -21,8 +21,23 @@ held-out file is for Playground perplexity / voice checks and for
 measuring generalization in the verbatim-copy check; the copy check
 itself is run against train documents by the eval lane.
 
+Optional D.1 rebalancing (both off by default, both recorded in the
+stats sidecar):
+  --min-val-per-author N  deterministically promote N held-out docs
+      per author (smallest record ids from that author's train docs)
+      so every voice is measurable in val; at least one train doc per
+      author is always kept.
+  --min-per-author N --max-repeat R  oversample minority authors in
+      TRAIN ONLY by repeating their deduped train docs (round-robin)
+      until each author has N train docs or a doc would exceed R total
+      copies. The public corpus is finite, so this reweights existing
+      text — it creates none. Val is never repeated. Repetition trades
+      against the verbatim-copy check, so caps stay small.
+
 Usage:
   python data/build_finetune_corpus.py --out data/finetune
+  python data/build_finetune_corpus.py --out data/finetune_d1 \
+      --min-val-per-author 1 --min-per-author 20 --max-repeat 4
 """
 
 from __future__ import annotations
@@ -84,6 +99,84 @@ def transform_records(
     return train, val, stats
 
 
+def ensure_min_val_per_author(
+    train: list[dict], val: list[dict], *, min_val_per_author: int = 0
+) -> tuple[list[dict], list[dict], dict]:
+    """Promote train docs into val so every author is held out at least
+    min_val_per_author times. Deterministic: an author's smallest
+    record ids move first, and an author always keeps >= 1 train doc.
+    Returns (train, val, {author: [moved ids]})."""
+    if min_val_per_author <= 0:
+        return train, val, {}
+    val_counts = Counter(r["author"] for r in val)
+    by_author: dict[str, list[dict]] = {}
+    for rec in train:
+        by_author.setdefault(rec["author"], []).append(rec)
+    moved: dict[str, list[str]] = {}
+    moved_ids: set[str] = set()
+    for author in sorted(by_author):
+        need = min_val_per_author - val_counts.get(author, 0)
+        if need <= 0:
+            continue
+        docs = sorted(by_author[author], key=lambda r: r["id"])
+        for rec in docs[: max(0, min(need, len(docs) - 1))]:
+            moved.setdefault(author, []).append(rec["id"])
+            moved_ids.add(rec["id"])
+            val.append(rec)
+    if not moved_ids:
+        return train, val, moved
+    train = [r for r in train if r["id"] not in moved_ids]
+    return train, val, moved
+
+
+def apply_min_per_author(
+    train: list[dict], *, min_per_author: int = 0, max_repeat: int = 4
+) -> tuple[list[dict], dict]:
+    """Oversample minority authors in train by repeating their docs.
+
+    Repeats cycle round-robin through an author's deduped docs; no doc
+    exceeds max_repeat total copies. Returns (train + repeats appended,
+    info) with per-author before/after counts; authors that hit the
+    repeat cap below the target are reported as capped, not silently
+    padded further.
+    """
+    info: dict = {
+        "min_per_author": min_per_author,
+        "max_repeat": max_repeat,
+        "per_author": {},
+    }
+    if min_per_author <= 0:
+        return train, info
+    by_author: dict[str, list[dict]] = {}
+    for rec in train:
+        by_author.setdefault(rec["author"], []).append(rec)
+    copies = Counter(r["id"] for r in train)
+    counts = Counter(r["author"] for r in train)
+    repeats: list[dict] = []
+    for author in sorted(by_author):
+        docs = by_author[author]
+        start = counts[author]
+        i = 0
+        stalled = 0
+        while counts[author] < min_per_author and stalled < len(docs):
+            rec = docs[i % len(docs)]
+            i += 1
+            if copies[rec["id"]] >= max_repeat:
+                stalled += 1
+                continue
+            stalled = 0
+            copies[rec["id"]] += 1
+            counts[author] += 1
+            repeats.append(rec)
+        info["per_author"][author] = {
+            "unique_docs": start,
+            "final_docs": counts[author],
+            "repeats_added": counts[author] - start,
+            "capped": counts[author] < min_per_author,
+        }
+    return train + repeats, info
+
+
 def build_finetune_corpus(
     fetch: Callable[[str], dict],
     base: str = DEFAULT_BASE,
@@ -93,6 +186,9 @@ def build_finetune_corpus(
     val_pct: int = 10,
     pause_s: float = 0.2,
     snapshot_utc: str | None = None,
+    min_per_author: int = 0,
+    max_repeat: int = 4,
+    min_val_per_author: int = 0,
 ) -> tuple[list[dict], list[dict], dict]:
     """Fetch from the public Playground APIs and build the split corpus."""
     lobby, wall = collect(
@@ -115,6 +211,32 @@ def build_finetune_corpus(
             "include_simulated": include_simulated,
         }
     )
+    if min_val_per_author > 0 or min_per_author > 0:
+        train, val, moved = ensure_min_val_per_author(
+            train, val, min_val_per_author=min_val_per_author
+        )
+        if moved:
+            stats["val_promotions"] = moved
+        train, rebalance = apply_min_per_author(
+            train, min_per_author=min_per_author, max_repeat=max_repeat
+        )
+        if min_per_author > 0:
+            stats["rebalance"] = rebalance
+        # Recompute split stats so they describe the files as written.
+        stats["docs_train"] = len(train)
+        stats["docs_val"] = len(val)
+        stats["approx_tokens_train"] = sum(
+            approx_tokens(r["text"]) for r in train
+        )
+        stats["approx_tokens_val"] = sum(approx_tokens(r["text"]) for r in val)
+        per_author_train: dict[str, dict] = {}
+        for rec in train:
+            entry = per_author_train.setdefault(
+                rec["author"], {"docs": 0, "approx_tokens": 0}
+            )
+            entry["docs"] += 1
+            entry["approx_tokens"] += approx_tokens(rec["text"])
+        stats["per_author_train"] = dict(sorted(per_author_train.items()))
     return train, val, stats
 
 
@@ -142,6 +264,12 @@ def main() -> None:
     ap.add_argument("--rooms", default=None,
                     help="comma-separated room ids (default: all with messages)")
     ap.add_argument("--include-simulated", action="store_true")
+    ap.add_argument("--min-per-author", type=int, default=0,
+                    help="oversample train so each author has >= N docs (0=off)")
+    ap.add_argument("--max-repeat", type=int, default=4,
+                    help="max total copies of any doc when oversampling")
+    ap.add_argument("--min-val-per-author", type=int, default=0,
+                    help="promote docs so each author has >= N val docs (0=off)")
     args = ap.parse_args()
 
     rooms = args.rooms.split(",") if args.rooms else None
@@ -151,6 +279,9 @@ def main() -> None:
         rooms=rooms,
         include_simulated=args.include_simulated,
         val_pct=args.val_pct,
+        min_per_author=args.min_per_author,
+        max_repeat=args.max_repeat,
+        min_val_per_author=args.min_val_per_author,
     )
     written = write_finetune_corpus(args.out, train, val, stats)
     print(json.dumps(written, indent=2))

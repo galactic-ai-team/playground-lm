@@ -150,6 +150,31 @@ def test_run_sample_dry_run_writes_nothing(tmp_path):
     assert not out.exists()  # no directory, no files
 
 
+def test_take_by_token_budget_skips_repeated_ids():
+    r1 = rec("playground-lobby", "lumi", 40, "a")       # 10 tok
+    r2 = rec("playground-lobby", "claude", 40, "b")     # 10 tok
+    kept, used = take_by_token_budget([r1, dict(r1), r2], 30)
+    # The exact repeat of r1 (same id, as a rebalanced corpus contains)
+    # must not eat sample budget: each unique doc appears at most once.
+    assert [r["id"] for r in kept] == ["a", "b"]
+    assert used == 20
+
+
+def test_build_sample_forwards_rebalance_options():
+    train, val, stats = build_sample(
+        fake_fetch, BASE, train_token_cap=4096, val_token_cap=1024,
+        val_pct=0, pause_s=0, snapshot_utc="test",
+        min_per_author=3, max_repeat=3,
+    )
+    # Full (rebalanced) train is 3 docs x 3 authors in this fixture
+    # (lumi 1->3, claude 1->3, nova 2->3); the sample itself still
+    # holds unique docs only.
+    assert stats["full_docs_train"] == 9
+    assert stats["rebalance"]["per_author"]["lumi"]["final_docs"] == 3
+    ids = [r["id"] for r in train]
+    assert len(ids) == len(set(ids))
+
+
 def test_run_sample_writes_files(tmp_path):
     out = tmp_path / "finetune_sample"
     reported = run_sample(

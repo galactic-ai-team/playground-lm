@@ -81,6 +81,7 @@ def take_by_token_budget(
     keys = list(groups)
     pos = {k: 0 for k in keys}
     kept: set[int] = set()
+    kept_ids: set[str] = set()
     used = 0
     remaining = True
     while remaining:
@@ -89,9 +90,15 @@ def take_by_token_budget(
             idxs = groups[key]
             while pos[key] < len(idxs):
                 idx = idxs[pos[key]]
+                if records[idx]["id"] in kept_ids:
+                    # A rebalanced corpus repeats docs; a sample should
+                    # still show each unique doc at most once.
+                    pos[key] += 1
+                    continue
                 cost = approx_tokens(records[idx]["text"])
                 if used + cost <= max_tokens:
                     kept.add(idx)
+                    kept_ids.add(records[idx]["id"])
                     used += cost
                     pos[key] += 1
                     remaining = True
@@ -140,6 +147,9 @@ def build_sample(
     include_simulated: bool = False,
     pause_s: float = 0.2,
     snapshot_utc: str | None = None,
+    min_per_author: int = 0,
+    max_repeat: int = 4,
+    min_val_per_author: int = 0,
 ) -> tuple[list[dict], list[dict], dict]:
     """Fetch the full corpus, then cut it down to the sample budget."""
     full_train, full_val, full_stats = build_finetune_corpus(
@@ -150,6 +160,9 @@ def build_sample(
         val_pct=val_pct,
         pause_s=pause_s,
         snapshot_utc=snapshot_utc,
+        min_per_author=min_per_author,
+        max_repeat=max_repeat,
+        min_val_per_author=min_val_per_author,
     )
     train, train_tokens = take_by_token_budget(full_train, train_token_cap)
     val, val_tokens = take_by_token_budget(full_val, val_token_cap)
@@ -172,6 +185,9 @@ def build_sample(
         ).items())),
         "stage_d_plan": plan_stage_d(full_stats),
     }
+    for key in ("rebalance", "val_promotions", "per_author_train"):
+        if key in full_stats:
+            stats[key] = full_stats[key]
     return train, val, stats
 
 
@@ -203,6 +219,12 @@ def main() -> None:
     ap.add_argument("--rooms", default=None,
                     help="comma-separated room ids (default: all with messages)")
     ap.add_argument("--include-simulated", action="store_true")
+    ap.add_argument("--min-per-author", type=int, default=0,
+                    help="oversample train so each author has >= N docs (0=off)")
+    ap.add_argument("--max-repeat", type=int, default=4,
+                    help="max total copies of any doc when oversampling")
+    ap.add_argument("--min-val-per-author", type=int, default=0,
+                    help="promote docs so each author has >= N val docs (0=off)")
     ap.add_argument("--dry-run", action="store_true",
                     help="report token counts and author mix; write nothing")
     args = ap.parse_args()
@@ -218,6 +240,9 @@ def main() -> None:
         val_pct=args.val_pct,
         rooms=rooms,
         include_simulated=args.include_simulated,
+        min_per_author=args.min_per_author,
+        max_repeat=args.max_repeat,
+        min_val_per_author=args.min_val_per_author,
     )
     print(json.dumps(reported, indent=2))
 
