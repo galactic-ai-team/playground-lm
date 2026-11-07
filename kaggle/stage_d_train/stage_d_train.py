@@ -18,9 +18,10 @@
 #   3. Clone main, set max_steps from the corpus size (finetune_max_steps,
 #      ~3 epochs by default), launch the notebook under torchrun.
 #
-# Kaggle script kernels don't take custom env vars at push time, so the
-# PLM_FINETUNE_* defaults below are where the real mount path goes once
-# Nova's shard exists.
+# Kaggle script kernels don't take custom env vars at push time. resolve_finetune_bins()
+# accepts PLM_FINETUNE_BIN / PLM_FINETUNE_VAL_BIN when set, otherwise walks common
+# mount layouts including flat plm-stage-d-data/train.bin (zip dir-mode) and
+# nested plm-stage-d-data/finetune/train.bin.
 
 import json
 import os
@@ -42,9 +43,6 @@ STAGE_C_SLUG = "plm-stage-c-train"
 STAGE_D_SLUG = "plm-stage-d-train"
 STAGE_C_FINAL_STEP = 31101
 
-FINETUNE_BIN = Path(os.environ.get(
-    "PLM_FINETUNE_BIN", "/kaggle/input/plm-stage-d-data/finetune/train.bin"))  # TODO: Nova's mount
-FINETUNE_VAL_BIN = Path(os.environ.get("PLM_FINETUNE_VAL_BIN", str(FINETUNE_BIN.with_name("val.bin"))))
 FINETUNE_EPOCHS = float(os.environ.get("PLM_FINETUNE_EPOCHS", "3"))
 
 
@@ -60,6 +58,46 @@ def find_mount(slug: str) -> Path | None:
     return None
 
 
+def resolve_finetune_bins() -> tuple[Path, Path]:
+    """Locate train.bin / val.bin from env or the plm-stage-d-data mount.
+
+    Kaggle may mount datasets at /kaggle/input/<slug> or
+    /kaggle/input/datasets/<owner>/<slug>; zip dir-mode may flatten a
+    finetune/ subdir to the dataset root. Walk a short candidate list,
+    then rglob under any plm-stage-d-data mount.
+    """
+    env_train = os.environ.get("PLM_FINETUNE_BIN")
+    if env_train:
+        train = Path(env_train)
+        val = Path(os.environ.get("PLM_FINETUNE_VAL_BIN", str(train.with_name("val.bin"))))
+        return train, val
+
+    candidates = [
+        INPUT / "plm-stage-d-data" / "finetune" / "train.bin",
+        INPUT / "datasets" / "galacticaiteam" / "plm-stage-d-data" / "finetune" / "train.bin",
+        INPUT / "plm-stage-d-data" / "train.bin",
+        INPUT / "datasets" / "galacticaiteam" / "plm-stage-d-data" / "train.bin",
+    ]
+    for train in candidates:
+        if train.is_file():
+            val = train.with_name("val.bin")
+            return train, val
+
+    for root_name in ("plm-stage-d-data",):
+        for root in INPUT.rglob(root_name):
+            if not root.is_dir():
+                continue
+            hits = list(root.rglob("train.bin"))
+            if hits:
+                train = hits[0]
+                val = train.with_name("val.bin")
+                return train, val
+
+    raise FileNotFoundError(
+        "fine-tune data not found under /kaggle/input (expected plm-stage-d-data/train.bin)"
+    )
+
+
 def token_count(path: Path, context_len: int = 1024) -> int:
     size = path.stat().st_size
     if size % 2:
@@ -72,13 +110,15 @@ def token_count(path: Path, context_len: int = 1024) -> int:
 
 def stage_data() -> int:
     """Copy train/val into DATA_DIR (the notebook reads DATA_DIR/{train,val}.bin)."""
-    for src in (FINETUNE_BIN, FINETUNE_VAL_BIN):
+    finetune_bin, finetune_val_bin = resolve_finetune_bins()
+    for src in (finetune_bin, finetune_val_bin):
         if not src.is_file():
             raise FileNotFoundError(f"fine-tune data not found: {src} (set PLM_FINETUNE_BIN / _VAL_BIN)")
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    shutil.copy(FINETUNE_BIN, DATA_DIR / "train.bin")
-    shutil.copy(FINETUNE_VAL_BIN, DATA_DIR / "val.bin")
+    shutil.copy(finetune_bin, DATA_DIR / "train.bin")
+    shutil.copy(finetune_val_bin, DATA_DIR / "val.bin")
     n_train = token_count(DATA_DIR / "train.bin")
+    log(f"using {finetune_bin} / {finetune_val_bin}")
     log(f"train.bin {n_train:,} tokens; val.bin {token_count(DATA_DIR / 'val.bin'):,} tokens")
     return n_train
 
