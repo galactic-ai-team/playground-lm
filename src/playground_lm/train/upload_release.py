@@ -30,6 +30,8 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from playground_lm.train.sidecar import sidecar_path
+
 
 @dataclass
 class UploadResult:
@@ -135,10 +137,18 @@ def upload(
     # Upload each checkpoint weight that isn't already there.
     for entry in manifest["checkpoints"]:
         name = Path(entry["path"]).name
+        weights = run_dir / entry["path"]
+        # The small model-config JSON beside the weights (Claude) goes up too,
+        # so evals of a released checkpoint never need its _state.pt. It is
+        # also uploaded when only the weights are already released (backfill).
+        side = sidecar_path(weights)
+        if side.exists() and side.name not in present:
+            _upload_one(repo, tag, side)
+            print(f"[upload] step {entry['step']:>8} -> {side.name}")
+            result.uploaded.append(side.name)
         if name in present:
             result.skipped.append(name)
             continue
-        weights = run_dir / entry["path"]
         if not weights.exists():
             print(f"[upload] WARN: manifest references missing {weights}, skipping")
             result.skipped.append(name)
