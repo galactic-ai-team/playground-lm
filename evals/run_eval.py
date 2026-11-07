@@ -68,7 +68,9 @@ def split_checkpoint_config(
     Resolution:
     1. Explicit --config JSON
     2. JSON next to weights, or run-level manifest.json
-    3. Paired step_XXXXXXXX_state.pt, read with weights_only=True
+    3. The .safetensors header (CheckpointManager writes the same JSON
+       there under "playground_lm"), so the weights file alone is enough
+    4. Paired step_XXXXXXXX_state.pt, read with weights_only=True
 
     The optimizer state is never loaded into the inference model.
     """
@@ -101,6 +103,17 @@ def split_checkpoint_config(
             ):
                 return model_config(data)
 
+    if path.suffix == ".safetensors" and path.is_file():
+        from safetensors import safe_open
+
+        with safe_open(str(path), framework="np") as handle:  # header only
+            header = handle.metadata() or {}
+        if "playground_lm" in header:
+            document = json.loads(header["playground_lm"])
+            data = document.get("config", document) if isinstance(document, dict) else None
+            if isinstance(data, dict) and ("model" in data or "vocab_size" in data):
+                return model_config(data)
+
     # Dee's CheckpointManager pairs these two files.
     state_path = path.with_name(path.stem + "_state.pt")
     if state_path.is_file():
@@ -118,7 +131,8 @@ def split_checkpoint_config(
     raise FileNotFoundError(
         "No model config found for split checkpoint "
         f"{path}. Supply --config with a model-config JSON, "
-        "or include the run manifest / paired _state.pt file."
+        "or include the step_XXXXXXXX_model_config.json sidecar, "
+        "the run manifest or the paired _state.pt file."
     )
 
 

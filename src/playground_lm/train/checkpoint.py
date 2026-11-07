@@ -23,6 +23,14 @@
 #     with the loss scale it had reached instead of restarting at 65536 and
 #     skipping updates on overflow until it settles. Checkpoints written
 #     before this existed resume with an empty "extra".
+#   - Self-describing weights (Claude): every save also writes
+#     step_XXXXXXXX_model_config.json beside the weights (the first place
+#     evals/run_eval.py looks) and puts the same JSON in the .safetensors
+#     header under "playground_lm". Evals and exports can then rebuild the
+#     model from the weights file alone, without the ~1 GB _state.pt, which
+#     only resume needs. The JSON holds this manager's config (which
+#     contains the model architecture under "model"), run_id, step,
+#     tokens_seen and wall_time_s.
 
 import json
 import os
@@ -32,6 +40,17 @@ from pathlib import Path
 from typing import Optional
 
 import torch
+
+# Sidecar helpers live in sidecar.py (torch-free) so upload and backfill
+# tools can use them without importing torch. read_model_config_document is
+# re-exported here for callers that already import this module.
+from .sidecar import (
+    SAFETENSORS_METADATA_KEY,
+    model_config_document,
+    read_model_config_document,  # noqa: F401
+    sidecar_path,
+    write_model_config_sidecar,
+)
 
 
 ROLLING_KEEP = 3
@@ -114,14 +133,20 @@ class CheckpointManager:
         stem = f"step_{step:08d}"
         weights_path = self.ckpt_dir / f"{stem}.safetensors"
         state_path = self.ckpt_dir / f"{stem}_state.pt"
+        document = model_config_document(self.run_id, self.config, step, tokens_seen, wall_time_s)
 
         try:
             from safetensors.torch import save_file
             state_dict = {k: v.detach().cpu() for k, v in model.state_dict().items()}
-            save_file(state_dict, str(weights_path))
+            save_file(
+                state_dict,
+                str(weights_path),
+                metadata={SAFETENSORS_METADATA_KEY: json.dumps(document)},
+            )
         except ImportError:
             torch.save(model.state_dict(), str(weights_path).replace(".safetensors", ".pt"))
             weights_path = Path(str(weights_path).replace(".safetensors", ".pt"))
+        write_model_config_sidecar(weights_path, document)
 
         torch.save(
             {
@@ -211,7 +236,7 @@ class CheckpointManager:
             if stem.endswith("_state"):
                 stem = stem[: -len("_state")]
             state_path = self.ckpt_dir / f"{stem}_state.pt"
-            for p in (weights_path, state_path):
+            for p in (weights_path, state_path, sidecar_path(weights_path)):
                 try:
                     p.unlink()
                 except FileNotFoundError:
