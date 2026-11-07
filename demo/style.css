@@ -28,6 +28,12 @@ body {
   overflow-x: hidden;
 }
 
+/* Prevent wide children from forcing horizontal page scroll on narrow viewports */
+img, svg, table, pre, code,
+.panel, .cockpit, .topbar, .empty-banner, .slider-box, .controls-row, .onnx-url-bar {
+  max-width: 100%;
+}
+
 .bg-grid {
   position: fixed;
   inset: 0;
@@ -236,11 +242,6 @@ body {
   gap: 0.6rem;
 }
 
-@media (max-width: 640px) {
-  .ckpt-meta {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
 
 .ckpt-meta > div {
   background: #0c0a16;
@@ -575,4 +576,105 @@ textarea#prompt-input:focus {
 
 .bench-table thead tr:not(.benchmark-group-row) th {
   font-weight: 600;
+}
+
+@media (max-width: 640px) {
+  .topbar {
+    padding: 0.75rem;
+    align-items: flex-start;
+  }
+
+  .cockpit {
+    padding: 0 0.75rem;
+    margin: 1rem auto;
+    gap: 1rem;
+  }
+
+  .panel {
+    padding: 1rem;
+  }
+
+  .brand {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .brand h1 {
+    font-size: 1.05rem;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+
+  .subtitle {
+    font-size: 0.74rem;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .badge {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .runtime-status {
+    flex-wrap: wrap;
+    max-width: 100%;
+    border-radius: 12px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .mono-tag {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .empty-banner {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .slider-labels {
+    grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  }
+
+  .stage-btn {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .ckpt-meta {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .ckpt-meta .v {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .logit-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto;
+  }
+
+  .logit-tok {
+    min-width: 0;
+  }
+
+  .onnx-url-bar {
+    flex-wrap: wrap;
+  }
+
+  .onnx-url-bar input {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .param-control input[type="range"] {
+    width: 100%;
+    max-width: 140px;
+  }
 }

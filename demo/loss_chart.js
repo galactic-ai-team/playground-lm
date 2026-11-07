@@ -6,7 +6,8 @@
  *     "summary": { "final_step", "final_train_loss", "best_val_loss", "best_val_step", "tokens_seen" }
  *   }
  *
- * Includes Stage-C session boundary milestone markers (2035 / 10907 / 19366 / 31101 target)
+ * Includes Stage-C session boundary milestone markers (2035 / 10907 / 19366 / 31101 end)
+ * plus the Stage D Playground SFT marker (31104)
  * rendered strictly as step-axis vertical reference lines with no fabricated loss points.
  */
 
@@ -14,7 +15,8 @@ export const DEFAULT_STAGE_C_MILESTONES = [
   { step: 2035, shortLabel: 's1 start', description: 'Stage B end / Stage C s1 start (step 2,035)' },
   { step: 10907, shortLabel: 's1 end', description: 'Stage C s1 end / s2 start (step 10,907)' },
   { step: 19366, shortLabel: 's2 end', description: 'Stage C s2 end / s3 start (step 19,366)' },
-  { step: 31101, shortLabel: 's3 target', description: 'Stage C full pretraining target (step 31,101)', isTarget: true },
+  { step: 31101, shortLabel: 's3 end', description: 'Stage C pretraining end (step 31,101)' },
+  { step: 31104, shortLabel: 'Stage D', description: 'Stage D Playground SFT (step 31,104 · val 3.181)', isStageD: true },
 ];
 
 export function computeEmaSeries(values, weight = 0.9) {
@@ -118,13 +120,15 @@ export function renderLossChart(container, data, options = {}) {
       const mx = xOf(mStep);
       const mxFixed = mx.toFixed(1);
       const reached = mStep <= maxMeasuredStep;
-      const strokeColor = m.isTarget
+      const strokeColor = m.isStageD
+        ? 'rgba(124, 247, 212, 0.7)'
+        : m.isTarget
         ? 'rgba(244, 114, 182, 0.55)'
         : reached
         ? 'rgba(56, 189, 248, 0.45)'
         : 'rgba(148, 143, 177, 0.35)';
-      const textColor = m.isTarget ? '#f472b6' : reached ? '#38bdf8' : '#948fb1';
-      const dash = m.isTarget ? '2,3' : '3,4';
+      const textColor = m.isStageD ? '#7cf7d4' : m.isTarget ? '#f472b6' : reached ? '#38bdf8' : '#948fb1';
+      const dash = m.isStageD ? '4,2' : m.isTarget ? '2,3' : '3,4';
       const anchor = mx > width - 65 ? 'end' : mx < pad.left + 35 ? 'start' : 'middle';
       const labelY = idx % 2 === 0 ? pad.top - 12 : pad.top - 3;
       const tip = m.description || `${m.shortLabel} (step ${mStep.toLocaleString()})`;
@@ -168,7 +172,7 @@ export function renderLossChart(container, data, options = {}) {
       <span><i class="swatch swatch-ema"></i> Train EMA (0.9)</span>
       <span><i class="swatch swatch-raw"></i> Train Raw</span>
       <span><i class="swatch swatch-val"></i> Val Loss</span>
-      <span><i class="swatch swatch-milestone"></i> Stage C (2,035 / 10,907 / 19,366 / 31,101)</span>
+      <span><i class="swatch swatch-milestone"></i> Milestones (2,035 / 10,907 / 19,366 / 31,101 / Stage D 31,104)</span>
       ${
         data.summary?.best_val_loss != null
           ? `<span class="mono-tag">best val: ${Number(data.summary.best_val_loss).toFixed(3)} @ step ${Number(data.summary.best_val_step).toLocaleString()}</span>`
