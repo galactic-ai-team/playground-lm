@@ -92,22 +92,14 @@ let it run; check Kaggle's kernel sources before proceeding.
 ## 5. Disk budget
 
 - `/kaggle/working` quota: ~20 GB.
-- `/tmp` concat from Lumi's integration: 5.7 GB (`train.bin` + `val.bin`
-  under `/tmp`).
+- `/tmp` concat: 5.7 GB (`train.bin` + `val.bin`).
 - `/kaggle/working/runs/checkpoints`: carried forward from s3 via the mount.
-  If s3 still has 3 rolling + ~8 milestones from earlier sessions, that's
-  ~11 × (500 MB weights + 1.5 GB optimizer state) ≈ 22 GB — over quota
-  when combined with the `/tmp` concat.
-
-**Mitigation before push:** delete older milestone checkpoints from the
-s3 output via Kaggle's file browser if the disk is tight. Keep at minimum
-step ~28000 (the resume target) and the latest rolling. Disk prunes to
-the last 2–3 checkpoints keeps this session comfortably under quota.
-
-If you don't want to prune manually, `PLM_UPLOAD_EVERY` is not the right knob
-(it controls GitHub uploads, not local retention). Local pruning on the last
-session isn't automated; manual deletion in the Kaggle UI is the safest path
-for s4.
+  Sidecar prune (main #69) removes non-latest rolling checkpoints at startup,
+  which is expected to keep the working set small enough that s4 fits without
+  manual pruning. If it doesn't, delete older milestones in the Kaggle UI,
+  keeping at minimum the resume target (~s3's last save) and the latest
+  rolling.
+- `PLM_UPLOAD_EVERY` controls GitHub uploads, not local retention.
 
 ## 6. After s4 completes
 
