@@ -298,12 +298,27 @@ export async function loadBenchmarkTable(fallbackBenchmarks = null) {
     : Array.isArray(source.models)
     ? source.models
     : [];
+  const columnKeys = cols.map((col) =>
+    typeof col === 'object' ? col.key || col.id : col
+  );
+  const groups = Array.isArray(source.column_groups)
+    ? source.column_groups
+    : [];
+  const validGroups =
+    groups.length > 0 &&
+    groups.every(
+      (group) =>
+        typeof group.label === 'string' &&
+        Array.isArray(group.columns) &&
+        group.columns.length > 0
+    ) &&
+    groups.flatMap((group) => group.columns).join('|') ===
+      columnKeys.join('|');
 
   if (benchSourceNote) {
-    // Restored from #62: label the rounded reported summary honestly.
     const noteText =
       (benchData && benchData.source_type === 'reported_rounded_summary'
-        ? 'Reported Stage B results (rounded). Full evaluation reports pending.'
+        ? 'Reported rounded results. FineWeb-Edu validation loss/PPL measure next-token prediction; HellaSwag and LAMBADA measure separate downstream abilities. Stage B uses a different validation split from Stage C.'
         : null) ||
       source.note ||
       source.source_note ||
@@ -323,10 +338,38 @@ export async function loadBenchmarkTable(fallbackBenchmarks = null) {
   benchEmptyState.classList.add('hidden');
   benchTableWrap.classList.remove('hidden');
 
+  benchThead.innerHTML = '';
+  benchTbody.innerHTML = '';
+
+  if (validGroups) {
+    const groupRow = document.createElement('tr');
+    groupRow.className = 'benchmark-group-row';
+
+    const modelHeader = document.createElement('th');
+    modelHeader.textContent = 'Model / Checkpoint';
+    modelHeader.rowSpan = 2;
+    modelHeader.scope = 'col';
+    groupRow.appendChild(modelHeader);
+
+    for (const group of groups) {
+      const th = document.createElement('th');
+      th.scope = 'colgroup';
+      th.colSpan = group.columns.length;
+      th.textContent = group.label;
+      if (group.description) th.title = group.description;
+      groupRow.appendChild(th);
+    }
+
+    benchThead.appendChild(groupRow);
+  }
+
   const trHead = document.createElement('tr');
   const thName = document.createElement('th');
   thName.textContent = 'Model / Checkpoint';
-  trHead.appendChild(thName);
+  if (!validGroups) {
+    thName.scope = 'col';
+    trHead.appendChild(thName);
+  }
 
   for (const col of cols) {
     const th = document.createElement('th');
@@ -334,12 +377,10 @@ export async function loadBenchmarkTable(fallbackBenchmarks = null) {
     const colLabel =
       typeof col === 'object' ? col.label || colKey : COLUMN_LABELS[colKey] || colKey;
     th.textContent = colLabel;
+    th.scope = 'col';
     trHead.appendChild(th);
   }
-  benchThead.innerHTML = '';
   benchThead.appendChild(trHead);
-
-  benchTbody.innerHTML = '';
   for (const row of rows) {
     const tr = document.createElement('tr');
     if (row.step !== undefined && row.step !== null) {
@@ -360,6 +401,11 @@ export async function loadBenchmarkTable(fallbackBenchmarks = null) {
       row.label ||
       (row.step !== undefined ? `Step ${Number(row.step).toLocaleString()}` : 'Run');
     tdLabel.textContent = String(rowName);
+    if (row.validation_split === 'stage_b') {
+      tdLabel.title = 'Validation loss/PPL use Stage B val.bin';
+    } else if (row.validation_split === 'stage_c') {
+      tdLabel.title = 'Validation loss/PPL use Stage C val.bin';
+    }
     tr.appendChild(tdLabel);
 
     for (let cIdx = 0; cIdx < cols.length; cIdx++) {

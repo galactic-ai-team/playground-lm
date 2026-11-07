@@ -1,3 +1,4 @@
+
 {
   "columns": [
     "val_loss",
@@ -5,11 +6,30 @@
     "hellaswag_acc_norm",
     "lambada_acc"
   ],
+  "column_groups": [
+    {
+      "label": "FineWeb-Edu validation",
+      "description": "Next-token prediction on held-out FineWeb-Edu text. Lower is better. Compare loss and perplexity only on the same validation split.",
+      "columns": [
+        "val_loss",
+        "perplexity"
+      ]
+    },
+    {
+      "label": "Downstream benchmarks",
+      "description": "HellaSwag normalized completion accuracy and LAMBADA exact final-word accuracy. Higher is better.",
+      "columns": [
+        "hellaswag_acc_norm",
+        "lambada_acc"
+      ]
+    }
+  ],
   "rows": [
     {
       "id": "step_00002035",
       "label": "PlaygroundLM Stage B — Step 2,035",
       "step": 2035,
+      "validation_split": "stage_b",
       "val_loss": 3.928,
       "perplexity": 50.8,
       "hellaswag_acc_norm": 0.257,
@@ -19,6 +39,7 @@
       "id": "step_00010907",
       "label": "PlaygroundLM Stage C s1 — Step 10,907",
       "step": 10907,
+      "validation_split": "stage_c",
       "val_loss": 3.442,
       "perplexity": 31.3,
       "hellaswag_acc_norm": 0.276,
@@ -28,14 +49,16 @@
       "id": "step_00019366",
       "label": "PlaygroundLM Stage C s2 — Step 19,366",
       "step": 19366,
+      "validation_split": "stage_c",
       "val_loss": 3.288,
       "perplexity": 26.8,
       "hellaswag_acc_norm": 0.288,
-      "lambada_acc": 0.190
+      "lambada_acc": 0.19
     },
     {
       "id": "gpt2_124m",
       "label": "OpenAI GPT-2 124M (Stage C val)",
+      "validation_split": "stage_c",
       "val_loss": 3.279,
       "perplexity": 26.6,
       "hellaswag_acc_norm": 0.309,
@@ -43,5 +66,5 @@
     }
   ],
   "source_type": "reported_rounded_summary",
-  "notes": "Rounded results from plm-stage-c-s1-s2-eval v2 (complete HellaSwag 10,042 / LAMBADA 5,153 / Stage C val.bin). Stage B step 2035 kept for history (Stage B val — not directly comparable on val_loss). Stage C s2 val_loss 3.288 is near GPT-2 3.279 on the same Stage C val.bin, but HellaSwag (28.8% vs 30.9%) and LAMBADA (19.0% vs 32.6%) still trail — do not claim an overall GPT-2 win from val alone. GPT-2 row replaces the prior Stage-B-val GPT-2 numbers (3.255 / 25.9)."
+  "notes": "Rounded reported results. Stage B uses a different validation split and its val loss/PPL must not be directly compared with Stage C rows. Stage C s2 and GPT-2 use the same Stage C val.bin. Lower FineWeb-Edu validation loss does not establish superior general-purpose capabilities."
 }
