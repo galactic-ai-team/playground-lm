@@ -74,3 +74,42 @@ def test_resolve_finetune_bins_missing_raises(launcher, tmp_path, monkeypatch):
     monkeypatch.setattr(launcher, "INPUT", tmp_path)
     with pytest.raises(FileNotFoundError, match="plm-stage-d-data"):
         launcher.resolve_finetune_bins()
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _run_main_capture_env(launcher, monkeypatch, n_train):
+    """Run main() with all Kaggle side effects stubbed; return the torchrun env."""
+    monkeypatch.setattr(launcher, "stage_data", lambda: n_train)
+    monkeypatch.setattr(launcher, "resume_previous_stage_d", lambda: True)
+    monkeypatch.setattr(launcher, "REPO_DIR", REPO_ROOT)
+    monkeypatch.setattr(launcher, "gh_token", lambda: None)
+    calls = []
+
+    class _Done:
+        returncode = 0
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return _Done()
+
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+    assert launcher.main() == 0
+    return calls[-1][1]["env"]
+
+
+def test_short_run_validates_every_update(launcher, monkeypatch, capsys):
+    env = _run_main_capture_env(launcher, monkeypatch, n_train=17_631)
+    span = int(env["PLM_MAX_STEPS"]) - launcher.STAGE_C_FINAL_STEP
+    assert span <= 50
+    assert env["PLM_EVAL_INTERVAL"] == "1"
+    assert "WARN: train set" in capsys.readouterr().out
+
+
+def test_long_run_keeps_eval_interval_25(launcher, monkeypatch, capsys):
+    env = _run_main_capture_env(launcher, monkeypatch, n_train=2_000_000)
+    span = int(env["PLM_MAX_STEPS"]) - launcher.STAGE_C_FINAL_STEP
+    assert span > 50
+    assert env["PLM_EVAL_INTERVAL"] == "25"
+    assert "WARN: train set" not in capsys.readouterr().out

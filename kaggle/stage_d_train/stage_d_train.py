@@ -197,6 +197,9 @@ def main() -> int:
     max_steps = finetune_max_steps(n_train, epochs=FINETUNE_EPOCHS)
     span = max_steps - STAGE_C_FINAL_STEP
     log(f"max_steps {max_steps} ({span} updates, ~{FINETUNE_EPOCHS:g} epochs)")
+    if n_train < 24 * 1024:
+        log(f"WARN: train set ({n_train:,} tokens) is smaller than one 24-sequence batch; "
+            f"'epochs' are approximate and each update sees overlapping windows")
 
     env = dict(os.environ)
     env.update({
@@ -204,6 +207,9 @@ def main() -> int:
         "PLM_MAX_STEPS": str(max_steps),
 
         "PLM_WARMUP": str(max(1, min(20, span // 4))),  # tiny corpus: keep warmup inside the run
+        # The loop validates on multiples of eval_interval; short runs need a
+        # small interval or they get no Playground val loss at all.
+        "PLM_EVAL_INTERVAL": "1" if span <= 50 else "25",
         "PLM_BATCH_SIZE": "6",                 # T4: 24 = 6 x 2 GPUs x 2 accumulation
         "PLM_DATA_DIR": str(DATA_DIR),
         "PLM_RUN_DIR": str(RUNS_DIR),
