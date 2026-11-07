@@ -8,11 +8,36 @@
  * - `./checkpoint_loader.js` (`CheckpointManager`) for non-reloading slider scrubbing, abortable
  *   downloads, LRU session caching, and neighbor prefetching.
  * - `./loss_chart.js` (`renderLossChart`) reading `./loss_curve.json`.
+ * - "New riddle" button (`#btn-riddle`) picking a random riddle from `manifest.riddle_prompts`
+ *   (with built-in fallback list), populating `#prompt-input`, and triggering generation.
  */
 
 import { loadGPT2Tokenizer, GPT2_EOT_ID } from './gpt2_bpe.js';
 import { renderLossChart } from './loss_chart.js';
 import { CheckpointManager } from './checkpoint_loader.js';
+
+export const DEFAULT_RIDDLE_PROMPTS = [
+  'Riddle: I have keys but no locks. I have space but no room. You can enter, but you cannot go outside. What am I? Answer:',
+  'Riddle: I have hands but I cannot clap, and a face that never smiles. What am I? Answer:',
+  'Riddle: The more of me you take, the more you leave behind. What am I? Answer:',
+  'Riddle: I speak without a mouth and hear without ears. I come alive with the wind. What am I? Answer:',
+  'Riddle: I have cities, but no houses. I have mountains, but no trees. I have water, but no fish. What am I? Answer:',
+  'Riddle: What gets wetter and wetter the more it dries? Answer:',
+  'Riddle: I follow you all day long in the sun, but disappear when the night comes. What am I? Answer:',
+  'Riddle: I have a single eye, yet I cannot see a thing. I pull a thread wherever I go. What am I? Answer:',
+  'Riddle: I am tall when I am young, and I am short when I am old. What am I? Answer:',
+  'Riddle: What has to be broken before you can cook and eat it? Answer:',
+  'Riddle: I have a neck with no head, and I hold water inside. What am I? Answer:',
+  'Riddle: I have teeth that cannot bite, and I glide through tangled hair. What am I? Answer:',
+  'Riddle: I fall from the clouds without ever getting hurt, and vanish when the sun gets warm. What am I? Answer:',
+  'Riddle: I am full of holes, yet I can still hold plenty of water. What am I? Answer:',
+  'Riddle: I have pages instead of leaves, and a spine with no bones. What am I? Answer:',
+  'Riddle: What runs around a whole yard without ever moving an inch? Answer:',
+  'Riddle: What belongs to you, yet other people use it far more than you do? Answer:',
+  'Riddle: I can fill an entire room without taking up any space at all. What am I? Answer:',
+  'Riddle: I have four legs in the morning, two at noon, and three in the evening, or I stand still beneath your dinner plate. What am I? Answer:',
+  'Riddle: Forward I am heavy, but backward I am not. What word am I? Answer:',
+];
 
 const COLUMN_LABELS = {
   model: 'Model / Step',
@@ -34,15 +59,16 @@ let manifest = {
     columns: ['val_loss', 'perplexity', 'hellaswag_acc_norm', 'lambada_acc'],
     rows: [],
   },
-  riddle_prompts: [],
+  riddle_prompts: DEFAULT_RIDDLE_PROMPTS.slice(),
 };
 let lossCurveData = null;
 let activeCheckpointStep = null;
-let riddleIndex = 0;
+let lastRiddleIndex = -1;
 let onnxSession = null;
 let hasWebGPU = false;
 let isGenerating = false;
 let stopRequested = false;
+let activeGenerationPromise = null;
 let tokenizer = null;
 let checkpointManager = null;
 
@@ -95,6 +121,21 @@ const benchTableWrap = document.getElementById('bench-table-wrap');
 const benchThead = document.getElementById('bench-thead');
 const benchTbody = document.getElementById('bench-tbody');
 const benchSourceNote = document.getElementById('bench-source-note');
+
+/**
+ * Picks a random riddle from `pool`, avoiding `lastIndex` when `pool.length > 1`.
+ */
+export function pickRandomRiddle(pool, lastIndex = -1) {
+  const list = Array.isArray(pool) && pool.length > 0 ? pool : DEFAULT_RIDDLE_PROMPTS;
+  if (list.length === 1) {
+    return { text: list[0], index: 0 };
+  }
+  let idx = Math.floor(Math.random() * list.length);
+  if (idx === lastIndex) {
+    idx = (idx + 1 + Math.floor(Math.random() * (list.length - 1))) % list.length;
+  }
+  return { text: list[idx], index: idx };
+}
 
 /**
  * Applies repetition penalty, Temperature scaling, Top-K filtering, and Top-P (nucleus)
@@ -248,9 +289,10 @@ export async function loadBenchmarkTable(fallbackBenchmarks = null) {
   }
 
   const source = benchData || fallbackBenchmarks || manifest.benchmarks || {};
-  const cols = Array.isArray(source.columns) && source.columns.length
-    ? source.columns
-    : ['val_loss', 'perplexity', 'hellaswag_acc_norm', 'lambada_acc'];
+  const cols =
+    Array.isArray(source.columns) && source.columns.length
+      ? source.columns
+      : ['val_loss', 'perplexity', 'hellaswag_acc_norm', 'lambada_acc'];
   const rows = Array.isArray(source.rows)
     ? source.rows
     : Array.isArray(source.models)
@@ -289,7 +331,8 @@ export async function loadBenchmarkTable(fallbackBenchmarks = null) {
   for (const col of cols) {
     const th = document.createElement('th');
     const colKey = typeof col === 'object' ? col.key || col.id : col;
-    const colLabel = typeof col === 'object' ? col.label || colKey : COLUMN_LABELS[colKey] || colKey;
+    const colLabel =
+      typeof col === 'object' ? col.label || colKey : COLUMN_LABELS[colKey] || colKey;
     th.textContent = colLabel;
     trHead.appendChild(th);
   }
@@ -389,7 +432,7 @@ function handleCheckpointStatus(status) {
     runtimeDot.classList.add('ready');
     btnGenerate.disabled = isGenerating;
     if (!isGenerating && outputStream.querySelector('.muted')) {
-      outputStream.innerHTML = `<span class="muted">Checkpoint <code>${checkpoint.resolvedUrl}</code> ready (${message}). Enter a prompt and click Generate.</span>`;
+      outputStream.innerHTML = `<span class="muted">Checkpoint <code>${checkpoint.resolvedUrl}</code> ready (${message}). Enter a prompt or click <b>New riddle</b> to generate.</span>`;
     }
   } else if (state === 'loading' || state === 'compiling') {
     onnxSession = null;
@@ -411,6 +454,10 @@ async function loadManifestAndArtifacts() {
     const res = await fetch('./manifest.json', { cache: 'no-store' });
     if (res.ok) {
       const parsed = await res.json();
+      const loadedRiddles =
+        Array.isArray(parsed.riddle_prompts) && parsed.riddle_prompts.length > 0
+          ? parsed.riddle_prompts
+          : DEFAULT_RIDDLE_PROMPTS.slice();
       manifest = {
         model: parsed.model || 'PlaygroundLM',
         checkpoints: Array.isArray(parsed.checkpoints) ? parsed.checkpoints : [],
@@ -420,11 +467,11 @@ async function loadManifestAndArtifacts() {
             : ['val_loss', 'perplexity', 'hellaswag_acc_norm', 'lambada_acc'],
           rows: Array.isArray(parsed.benchmarks?.rows) ? parsed.benchmarks.rows : [],
         },
-        riddle_prompts: Array.isArray(parsed.riddle_prompts) ? parsed.riddle_prompts : [],
+        riddle_prompts: loadedRiddles,
       };
     }
   } catch (err) {
-    console.warn('Could not load ./manifest.json:', err);
+    console.warn('Could not load ./manifest.json, using default riddle prompts:', err);
   }
 
   try {
@@ -485,16 +532,17 @@ function renderManifestCheckpointsAndRiddles() {
     checkpointManager.selectIndex(ckpts.length - 1).catch(() => {});
   }
 
-  const riddles = manifest.riddle_prompts || [];
-  if (riddles.length > 0) {
-    btnRiddle.disabled = false;
-    btnRiddle.textContent = `🧩 Riddle Prompt (1/${riddles.length})`;
-    if (!promptInput.value.trim()) {
-      promptInput.value = riddles[0];
-    }
-  } else {
-    btnRiddle.disabled = true;
-    btnRiddle.textContent = '🧩 Riddle Prompt (none in manifest)';
+  // Ensure Riddle button is enabled and pre-populates the prompt box on boot
+  const riddles =
+    Array.isArray(manifest.riddle_prompts) && manifest.riddle_prompts.length > 0
+      ? manifest.riddle_prompts
+      : DEFAULT_RIDDLE_PROMPTS;
+  btnRiddle.disabled = false;
+  btnRiddle.textContent = '🧩 New riddle';
+  if (!promptInput.value.trim()) {
+    const initial = pickRandomRiddle(riddles, lastRiddleIndex);
+    lastRiddleIndex = initial.index;
+    promptInput.value = initial.text;
   }
 }
 
@@ -618,6 +666,51 @@ async function runOnnxGeneration() {
   }
 }
 
+/**
+ * Picks a random riddle from `manifest.riddle_prompts`, places it into the prompt box,
+ * and triggers ONNX generation if a checkpoint session is mounted (or shows tokenized
+ * preview info while awaiting a mounted checkpoint).
+ */
+async function handleNewRiddleClick() {
+  const pool =
+    Array.isArray(manifest.riddle_prompts) && manifest.riddle_prompts.length > 0
+      ? manifest.riddle_prompts
+      : DEFAULT_RIDDLE_PROMPTS;
+
+  const { text, index } = pickRandomRiddle(pool, lastRiddleIndex);
+  lastRiddleIndex = index;
+  promptInput.value = text;
+
+  if (isGenerating) {
+    stopRequested = true;
+    if (activeGenerationPromise) {
+      try {
+        await activeGenerationPromise;
+      } catch {
+        // Ignore cancellation errors
+      }
+    }
+  }
+
+  if (onnxSession && checkpointManager?.ortModule) {
+    activeGenerationPromise = runOnnxGeneration();
+    await activeGenerationPromise;
+  } else if (tokenizer) {
+    const tokenIds = tokenizer.encode(text);
+    outputStream.innerHTML = '';
+    const promptSpan = document.createElement('span');
+    promptSpan.className = 'tok-prompt';
+    promptSpan.textContent = text;
+    outputStream.appendChild(promptSpan);
+
+    const noteSpan = document.createElement('div');
+    noteSpan.className = 'muted';
+    noteSpan.style.marginTop = '0.55rem';
+    noteSpan.textContent = `[Riddle #${index + 1}/${pool.length} loaded · ${tokenIds.length} BPE tokens: [${tokenIds.slice(0, 12).join(', ')}${tokenIds.length > 12 ? ', ...' : ''}] — mount an ONNX checkpoint to generate continuation]`;
+    outputStream.appendChild(noteSpan);
+  }
+}
+
 // Event Listeners
 ckptSlider.addEventListener('input', (e) => {
   const idx = Number(e.target.value);
@@ -635,11 +728,7 @@ if (reppenSlider) {
 maxTokensSlider.addEventListener('input', (e) => (maxTokensVal.textContent = e.target.value));
 
 btnRiddle.addEventListener('click', () => {
-  const riddles = manifest.riddle_prompts || [];
-  if (!riddles.length) return;
-  riddleIndex = (riddleIndex + 1) % riddles.length;
-  promptInput.value = riddles[riddleIndex];
-  btnRiddle.textContent = `🧩 Riddle Prompt (${riddleIndex + 1}/${riddles.length})`;
+  handleNewRiddleClick().catch(() => {});
 });
 
 btnToggleCustomOnnx.addEventListener('click', () => {
@@ -651,7 +740,9 @@ btnFetchOnnx.addEventListener('click', () => {
   if (url) checkpointManager?.mountCustomUrl(url).catch(() => {});
 });
 
-btnGenerate.addEventListener('click', runOnnxGeneration);
+btnGenerate.addEventListener('click', () => {
+  activeGenerationPromise = runOnnxGeneration();
+});
 btnStop.addEventListener('click', () => {
   stopRequested = true;
 });

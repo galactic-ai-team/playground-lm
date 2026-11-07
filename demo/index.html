@@ -65,7 +65,7 @@
       <div class="section-head">
         <h2>2. In-Browser ONNX Inference (<code>input_ids</code> → <code>logits</code>)</h2>
         <div class="preset-row">
-          <button class="chip" id="btn-riddle" disabled title="Populated from manifest.json riddle_prompts">🧩 Riddle Prompt</button>
+          <button class="chip" id="btn-riddle" title="Pick a random riddle from manifest.json and generate">🧩 New riddle</button>
           <button class="chip" id="btn-toggle-custom-onnx">📦 Mount Custom .onnx URL</button>
         </div>
       </div>
@@ -76,7 +76,7 @@
       </div>
 
       <label class="field-label" for="prompt-input">Prompt</label>
-      <textarea id="prompt-input" rows="3" placeholder="Enter a prompt once a checkpoint is mounted..."></textarea>
+      <textarea id="prompt-input" rows="3" placeholder="Enter a prompt or click New riddle..."></textarea>
 
       <div class="controls-row">
         <div class="param-control">
