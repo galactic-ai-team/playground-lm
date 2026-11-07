@@ -33,6 +33,7 @@ checks every ~10 epochs and stop when val stops improving.
 Usage:
   python data/sample_finetune_corpus.py
   python data/sample_finetune_corpus.py --train-tokens 8192 --val-tokens 2048
+  python -m data.sample_finetune_corpus --dry-run   # counts only, no writes
 """
 
 from __future__ import annotations
@@ -40,8 +41,15 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
+from collections import Counter
 from pathlib import Path
 from typing import Callable
+
+# Sibling data/*.py modules are imported top-level (the dataset lane's
+# convention). When this file runs as `python -m data.sample_...` the
+# repo root, not data/, is on sys.path, so add our own directory first.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from build_finetune_corpus import build_finetune_corpus, write_finetune_corpus
 from common import approx_tokens
@@ -157,9 +165,32 @@ def build_sample(
         "full_docs_val": len(full_val),
         "fetched_lobby_docs": full_stats["fetched_lobby_docs"],
         "fetched_wall_docs": full_stats["fetched_wall_docs"],
+        "full_per_author_docs": full_stats["per_author_docs"],
+        "full_per_source_docs": full_stats["per_source_docs"],
+        "sample_per_author_docs": dict(sorted(Counter(
+            r["author"] for r in train + val
+        ).items())),
         "stage_d_plan": plan_stage_d(full_stats),
     }
     return train, val, stats
+
+
+def run_sample(
+    fetch: Callable[[str], dict],
+    *,
+    out: Path,
+    dry_run: bool = False,
+    **build_kwargs,
+) -> dict:
+    """Build the sample and either write it or just report it (dry-run)."""
+    train, val, stats = build_sample(fetch, **build_kwargs)
+    if dry_run:
+        reported = dict(stats)
+        reported["dry_run"] = True
+        return reported
+    written = write_finetune_corpus(out, train, val, stats)
+    written["dry_run"] = False
+    return written
 
 
 def main() -> None:
@@ -172,20 +203,23 @@ def main() -> None:
     ap.add_argument("--rooms", default=None,
                     help="comma-separated room ids (default: all with messages)")
     ap.add_argument("--include-simulated", action="store_true")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="report token counts and author mix; write nothing")
     args = ap.parse_args()
 
     rooms = args.rooms.split(",") if args.rooms else None
-    train, val, stats = build_sample(
+    reported = run_sample(
         fetch_json,
-        args.base,
+        out=args.out,
+        dry_run=args.dry_run,
+        base=args.base,
         train_token_cap=args.train_tokens,
         val_token_cap=args.val_tokens,
         val_pct=args.val_pct,
         rooms=rooms,
         include_simulated=args.include_simulated,
     )
-    written = write_finetune_corpus(args.out, train, val, stats)
-    print(json.dumps(written, indent=2))
+    print(json.dumps(reported, indent=2))
 
 
 if __name__ == "__main__":

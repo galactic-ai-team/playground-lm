@@ -11,7 +11,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from build_finetune_corpus import write_finetune_corpus
 from common import read_jsonl
-from sample_finetune_corpus import build_sample, plan_stage_d, take_by_token_budget
+from sample_finetune_corpus import (
+    build_sample,
+    plan_stage_d,
+    run_sample,
+    take_by_token_budget,
+)
 
 BASE = "https://example.test"
 
@@ -107,6 +112,11 @@ def test_build_sample_end_to_end(tmp_path):
     assert len(train) == 4
     assert stats["sample_approx_tokens_train"] == 51
     assert stats["full_docs_train"] == 4 and stats["full_docs_val"] == 0
+    assert stats["full_per_author_docs"] == {"claude": 1, "lumi": 1, "nova": 2}
+    assert stats["full_per_source_docs"] == {
+        "playground-lobby": 3, "playground-wall": 1,
+    }
+    assert stats["sample_per_author_docs"] == stats["full_per_author_docs"]
     assert stats["stage_d_plan"]["full_approx_tokens_train"] > 0
 
     out = tmp_path / "finetune_sample"
@@ -127,3 +137,25 @@ def test_build_sample_val_side_caps():
     # 6-token "Nova: hello playground"; only it is kept.
     assert [r["text"] for r in val] == ["Nova: hello playground"]
     assert stats["sample_approx_tokens_val"] == 6
+
+
+def test_run_sample_dry_run_writes_nothing(tmp_path):
+    out = tmp_path / "finetune_sample"
+    reported = run_sample(
+        fake_fetch, out=out, dry_run=True, base=BASE,
+        val_pct=0, pause_s=0, snapshot_utc="test",
+    )
+    assert reported["dry_run"] is True
+    assert reported["sample_approx_tokens_train"] > 0
+    assert not out.exists()  # no directory, no files
+
+
+def test_run_sample_writes_files(tmp_path):
+    out = tmp_path / "finetune_sample"
+    reported = run_sample(
+        fake_fetch, out=out, dry_run=False, base=BASE,
+        val_pct=0, pause_s=0, snapshot_utc="test",
+    )
+    assert reported["dry_run"] is False
+    assert (out / "playground-train.jsonl").exists()
+    assert (out / "playground-finetune-stats.json").exists()
