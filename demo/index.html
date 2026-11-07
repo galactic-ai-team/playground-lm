@@ -65,7 +65,7 @@
       <div class="section-head">
         <h2>2. In-Browser ONNX Inference (<code>input_ids</code> → <code>logits</code>)</h2>
         <div class="preset-row">
-          <button class="chip" id="btn-riddle" disabled title="Populated from manifest.json riddle_prompts">🧩 Riddle Prompt</button>
+          <button class="chip" id="btn-riddle" title="Pick a random riddle from manifest.json and generate">🧩 New riddle</button>
           <button class="chip" id="btn-toggle-custom-onnx">📦 Mount Custom .onnx URL</button>
         </div>
       </div>
@@ -76,7 +76,7 @@
       </div>
 
       <label class="field-label" for="prompt-input">Prompt</label>
-      <textarea id="prompt-input" rows="3" placeholder="Enter a prompt once a checkpoint is mounted..."></textarea>
+      <textarea id="prompt-input" rows="3" placeholder="Enter a prompt or click New riddle..."></textarea>
 
       <div class="controls-row">
         <div class="param-control">
@@ -142,11 +142,10 @@
           <h2>📊 Measured Benchmark Results</h2>
           <span class="mono-tag">benchmarks.json</span>
         </div>
-        <p class="muted">PlaygroundLM checkpoints compared with OpenAI GPT-2 124M using the same evaluation metrics.</p>
-        <p class="muted" id="bench-source-note" aria-live="polite">Loading benchmark results...</p>
+        <p class="muted" id="bench-source-note">Populated from <code>demo/benchmarks.json</code> and <code>demo/manifest.json</code>.</p>
 
         <div id="bench-empty-state" class="empty-banner">
-          <strong>No benchmark results available.</strong> Run the evaluation pipeline to populate <code>demo/benchmarks.json</code>.
+          <strong>Not evaluated yet.</strong> Benchmark rows are currently empty.
         </div>
 
         <div class="table-wrap hidden" id="bench-table-wrap">
