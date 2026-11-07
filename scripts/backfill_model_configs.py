@@ -30,6 +30,12 @@ def backfill(manifest_path: Path, out_dir: Path, steps: set[int] | None = None) 
     config = manifest.get("config") or {}
     if "model" not in config:
         raise ValueError(f"{manifest_path}: config has no 'model' section; nothing to describe")
+    if steps is not None:
+        # A step the manifest doesn't list (e.g. a rolling checkpoint already
+        # rotated out) would otherwise be skipped silently.
+        missing = sorted(set(steps) - {e["step"] for e in manifest["checkpoints"]})
+        if missing:
+            raise ValueError(f"{manifest_path}: no checkpoint entries for steps {missing}")
     out_dir.mkdir(parents=True, exist_ok=True)
     written = []
     for entry in manifest["checkpoints"]:
