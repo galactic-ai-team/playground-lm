@@ -21,6 +21,20 @@
       "label": "Stage C s2",
       "quant": "q8",
       "onnx_url": null
+    },
+    {
+      "step": 31101,
+      "tokens_seen": 3057352704,
+      "label": "Stage C final",
+      "quant": "q8",
+      "onnx_url": null
+    },
+    {
+      "step": 31104,
+      "tokens_seen": 3057426432,
+      "label": "Stage D",
+      "quant": "q8",
+      "onnx_url": null
     }
   ],
   "benchmarks": {
