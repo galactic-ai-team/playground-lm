@@ -5,13 +5,26 @@ from pathlib import Path
 MANIFEST = Path(__file__).resolve().parents[1] / "demo" / "manifest.json"
 
 
+def _checkpoint_url(c: dict):
+    """Prefer onnx_url, then url, then path (matches demo/checkpoint_loader.js)."""
+    for key in ("onnx_url", "url", "path"):
+        if key in c:
+            return c[key]
+    return None
+
+
 def test_manifest_schema():
     m = json.loads(MANIFEST.read_text())
     assert isinstance(m["checkpoints"], list)
     for c in m["checkpoints"]:
         assert isinstance(c["step"], int) and c["step"] >= 0
         assert isinstance(c["tokens_seen"], int) and c["tokens_seen"] >= 0
-        assert isinstance(c["url"], str) and c["url"]
+        # Metadata-only entries (onnx_url/url/path null or "") are allowed so the
+        # demo slider can scrub training steps before ONNX weights are hosted.
+        raw = _checkpoint_url(c)
+        if raw is None or raw == "":
+            continue
+        assert isinstance(raw, str) and raw.strip() == raw and raw
     steps = [c["step"] for c in m["checkpoints"]]
     assert steps == sorted(steps), "checkpoints must be in training order"
     b = m["benchmarks"]

@@ -1,11 +1,46 @@
 /**
  * PlaygroundLM — Non-Reloading ONNX Checkpoint Slider Manager & LRU Cache
  *
- * Fetches an ONNX model per checkpoint entry in `demo/manifest.json`, caches both
- * raw `ArrayBuffer` weights and instantiated `InferenceSession` objects in an LRU
- * cache, cancels stale in-flight fetches via `AbortController` when the user scrubs
- * the slider rapidly, and prefetches adjacent checkpoints in the background.
+ * Supports:
+ * - Relative/local ONNX paths (`models/step_2035_q4.onnx`, `./ckpt.onnx`, `/models/ckpt.onnx`)
+ *   normalized via `resolveCheckpointUrl()`.
+ * - Metadata-only checkpoint entries (where `onnx_url`/`url`/`path` is null or empty) so the
+ *   checkpoint slider can scrub across real training steps and show a clear
+ *   "Models coming soon — ONNX export pending" status before weights are hosted.
+ * - LRU session cache + abortable streaming downloads + neighbor prefetching.
  */
+
+/**
+ * Normalizes a checkpoint entry's URL or local path (`onnx_url`, `url`, or `path`).
+ * Returns `""` if no path is configured so the UI can show the "models coming soon" state.
+ *
+ * @param {object | string | null | undefined} ckptOrPath
+ * @returns {string}
+ */
+export function resolveCheckpointUrl(ckptOrPath) {
+  const raw =
+    typeof ckptOrPath === 'string'
+      ? ckptOrPath
+      : ckptOrPath?.onnx_url ?? ckptOrPath?.url ?? ckptOrPath?.path ?? '';
+
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) return '';
+
+  // Keep full URLs, root-relative paths, or explicit relative paths as-is
+  if (
+    /^(https?:)?\/\//i.test(trimmed) ||
+    trimmed.startsWith('./') ||
+    trimmed.startsWith('../') ||
+    trimmed.startsWith('/') ||
+    trimmed.startsWith('blob:') ||
+    trimmed.startsWith('data:')
+  ) {
+    return trimmed;
+  }
+
+  // Bare relative path like "models/step_2035_q4.onnx" -> "./models/step_2035_q4.onnx"
+  return `./${trimmed}`;
+}
 
 export class CheckpointManager {
   /**
@@ -36,7 +71,7 @@ export class CheckpointManager {
 
   /**
    * Sets the list of checkpoint descriptors from `demo/manifest.json`.
-   * Each item supports: `{ step, tokens_seen, url, onnx_url, path, label }`.
+   * Each item supports: `{ step, tokens_seen, onnx_url, url, path, quant, label, val_loss }`.
    *
    * @param {Array<object>} checkpoints
    */
@@ -46,7 +81,8 @@ export class CheckpointManager {
       index: idx,
       step: ckpt.step !== undefined ? Number(ckpt.step) : idx,
       tokens_seen: ckpt.tokens_seen !== undefined ? Number(ckpt.tokens_seen) : 0,
-      resolvedUrl: ckpt.url || ckpt.onnx_url || ckpt.path || '',
+      quant: ckpt.quant || (idx === checkpoints.length - 1 ? 'q8' : 'q4'),
+      resolvedUrl: resolveCheckpointUrl(ckpt),
     }));
   }
 
@@ -64,7 +100,8 @@ export class CheckpointManager {
    * @returns {boolean}
    */
   isCached(url) {
-    return Boolean(url && this.sessionCache.has(url));
+    const resolved = resolveCheckpointUrl(url);
+    return Boolean(resolved && this.sessionCache.has(resolved));
   }
 
   /**
@@ -81,7 +118,7 @@ export class CheckpointManager {
       throw new Error(`HTTP ${res.status} (${res.statusText || 'fetch failed'})`);
     }
 
-    const totalBytes = Number(res.headers.get('content-length')) || 0;
+    const totalBytes = Number(res.headers?.get?.('content-length')) || 0;
     if (!res.body || typeof res.body.getReader !== 'function') {
       const buf = await res.arrayBuffer();
       if (onProgress) onProgress(buf.byteLength, buf.byteLength);
@@ -113,10 +150,12 @@ export class CheckpointManager {
 
   /**
    * Selects and mounts the checkpoint at `index` without reloading the page.
-   * If already in the LRU cache, swaps in 0ms.
+   * If `resolvedUrl` is empty/missing, emits `state: 'coming_soon'` so the UI can
+   * update step/token metrics and highlight the loss curve while showing a clear
+   * "Models coming soon" banner.
    *
    * @param {number} index
-   * @returns {Promise<{ session: any, checkpoint: object, cached: boolean } | null>}
+   * @returns {Promise<{ session: any, checkpoint: object, cached: boolean, comingSoon?: boolean } | null>}
    */
   async selectIndex(index) {
     if (index < 0 || index >= this.checkpoints.length) return null;
@@ -125,21 +164,23 @@ export class CheckpointManager {
     this.activeIndex = index;
     const url = ckpt.resolvedUrl;
 
-    if (!url) {
-      this.onStatusChange({
-        state: 'unmounted',
-        index,
-        checkpoint: ckpt,
-        cached: false,
-        message: 'No ONNX URL in checkpoint entry',
-      });
-      return { session: null, checkpoint: ckpt, cached: false };
-    }
-
     // Cancel any previous in-flight checkpoint download if the user scrubbed past it
     if (this.activeAbortController) {
       this.activeAbortController.abort();
       this.activeAbortController = null;
+    }
+
+    if (!url) {
+      const quantTag = ckpt.quant ? `${ckpt.quant.toUpperCase()} ` : '';
+      this.onStatusChange({
+        state: 'coming_soon',
+        index,
+        checkpoint: ckpt,
+        cached: false,
+        session: null,
+        message: `Models coming soon (${quantTag}ONNX export pending)`,
+      });
+      return { session: null, checkpoint: ckpt, cached: false, comingSoon: true };
     }
 
     // Fast path: instant 0ms LRU cache hit
@@ -248,12 +289,12 @@ export class CheckpointManager {
   }
 
   /**
-   * Mounts an arbitrary custom ONNX URL (from the manual URL bar) into the same LRU cache.
+   * Mounts an arbitrary custom or relative ONNX path (from the manual URL bar) into the LRU cache.
    *
-   * @param {string} url
+   * @param {string} urlOrPath
    */
-  async mountCustomUrl(url) {
-    const cleanUrl = String(url || '').trim();
+  async mountCustomUrl(urlOrPath) {
+    const cleanUrl = resolveCheckpointUrl(urlOrPath);
     if (!cleanUrl) return null;
 
     const syntheticCkpt = {
@@ -261,6 +302,7 @@ export class CheckpointManager {
       step: this.checkpoints[this.activeIndex]?.step ?? 0,
       tokens_seen: this.checkpoints[this.activeIndex]?.tokens_seen ?? 0,
       resolvedUrl: cleanUrl,
+      onnx_url: cleanUrl,
       url: cleanUrl,
     };
 
@@ -335,8 +377,7 @@ export class CheckpointManager {
   }
 
   /**
-   * Warm the browser HTTP cache for adjacent checkpoints (`index - 1` and `index + 1`)
-   * so sliding to the previous/next step is near-instant.
+   * Warm the browser HTTP cache for adjacent checkpoints (`index - 1` and `index + 1`).
    *
    * @param {number} centerIndex
    */

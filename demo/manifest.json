@@ -1,6 +1,28 @@
 {
   "model": "PlaygroundLM-124M",
-  "checkpoints": [],
+  "checkpoints": [
+    {
+      "step": 2035,
+      "tokens_seen": 133365760,
+      "label": "Stage B",
+      "quant": "q4",
+      "onnx_url": null
+    },
+    {
+      "step": 10907,
+      "tokens_seen": 688128000,
+      "label": "Stage C s1",
+      "quant": "q4",
+      "onnx_url": null
+    },
+    {
+      "step": 19366,
+      "tokens_seen": 1269161984,
+      "label": "Stage C s2",
+      "quant": "q8",
+      "onnx_url": null
+    }
+  ],
   "benchmarks": {
     "columns": [
       "val_loss",
