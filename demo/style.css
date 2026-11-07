@@ -19,6 +19,10 @@
   padding: 0;
 }
 
+html {
+  overflow-x: hidden;
+}
+
 body {
   background-color: var(--bg);
   color: var(--text);
@@ -32,6 +36,14 @@ body {
 img, svg, table, pre, code,
 .panel, .cockpit, .topbar, .empty-banner, .slider-box, .controls-row, .onnx-url-bar {
   max-width: 100%;
+}
+
+/* Grid/flex children must be allowed to shrink below intrinsic content width */
+.cockpit > *,
+.panel,
+.main-panel,
+.side-col {
+  min-width: 0;
 }
 
 .bg-grid {
@@ -207,6 +219,7 @@ img, svg, table, pre, code,
 
 #ckpt-slider {
   width: 100%;
+  max-width: 100%;
   accent-color: var(--accent);
   cursor: pointer;
   margin-bottom: 0.75rem;
@@ -534,7 +547,9 @@ textarea#prompt-input:focus {
 }
 
 .table-wrap {
+  max-width: 100%;
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .bench-table {
@@ -585,13 +600,16 @@ textarea#prompt-input:focus {
   }
 
   .cockpit {
-    padding: 0 0.75rem;
+    width: 100%;
+    max-width: 100%;
+    padding: 0 0.6rem;
     margin: 1rem auto;
     gap: 1rem;
   }
 
   .panel {
     padding: 1rem;
+    overflow-x: clip;
   }
 
   .brand {
@@ -638,13 +656,32 @@ textarea#prompt-input:focus {
   }
 
   .slider-labels {
-    grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+    /* Force 2 columns so five long stage labels wrap instead of one oversized row */
+    grid-template-columns: 1fr 1fr;
   }
 
   .stage-btn {
+    width: 100%;
     min-width: 0;
+    font-size: 0.7rem;
+    padding: 0.4rem 0.25rem;
     overflow-wrap: anywhere;
     word-break: break-word;
+  }
+
+  .bench-table {
+    font-size: 0.72rem;
+  }
+
+  .bench-table th,
+  .bench-table td {
+    padding: 0.45rem 0.35rem;
+  }
+
+  input,
+  textarea,
+  #ckpt-slider {
+    max-width: 100%;
   }
 
   .ckpt-meta {
