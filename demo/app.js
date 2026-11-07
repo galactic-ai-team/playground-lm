@@ -2,14 +2,13 @@
  * PlaygroundLM Demo App — Strict Manifest, Benchmarks.json, GPT-2 BPE & Non-Reloading Checkpoint Slider
  *
  * Preserves:
- * - `loadBenchmarkTable()` reading `./benchmarks.json` (with % accuracy columns and source note)
- *   and falling back to `manifest.benchmarks` when needed.
+ * - `loadBenchmarkTable()` reading `./benchmarks.json` (with % accuracy columns and source note,
+ *   #62/#70) and falling back to `manifest.benchmarks` when needed.
  * - `./gpt2_bpe.js` (`loadGPT2Tokenizer`, `GPT2_EOT_ID`) for exact 50,257-vocab GPT-2 BPE.
- * - `./checkpoint_loader.js` (`CheckpointManager`) for non-reloading slider scrubbing, abortable
- *   downloads, LRU session caching, and neighbor prefetching.
+ * - `./checkpoint_loader.js` (`CheckpointManager`, `resolveCheckpointUrl`) supporting relative/local
+ *   ONNX paths and a clear "Models coming soon" banner when `onnx_url` is null/empty.
  * - `./loss_chart.js` (`renderLossChart`) reading `./loss_curve.json`.
- * - "New riddle" button (`#btn-riddle`) picking a random riddle from `manifest.riddle_prompts`
- *   (with built-in fallback list), populating `#prompt-input`, and triggering generation.
+ * - "New riddle" button (`#btn-riddle`) picking a random riddle from `manifest.riddle_prompts`.
  */
 
 import { loadGPT2Tokenizer, GPT2_EOT_ID } from './gpt2_bpe.js';
@@ -79,6 +78,7 @@ const runtimeDot = document.getElementById('runtime-dot');
 const runtimeLabel = document.getElementById('runtime-label');
 
 const ckptEmptyState = document.getElementById('ckpt-empty-state');
+const ckptComingSoonBanner = document.getElementById('ckpt-coming-soon-banner');
 const ckptControls = document.getElementById('ckpt-controls');
 const ckptSlider = document.getElementById('ckpt-slider');
 const ckptStageButtons = document.getElementById('ckpt-stage-buttons');
@@ -265,7 +265,7 @@ function formatMetricCell(val, colKey = '') {
   if (typeof val === 'number') {
     if (PERCENT_COLUMNS.has(colKey)) {
       const pct = val <= 1.0 && val >= 0 ? val * 100 : val;
-      return `${pct.toFixed(1)}%`; // #62: 1 decimal (source values are rounded)
+      return `${pct.toFixed(2)}%`;
     }
     return Number.isInteger(val) ? val.toLocaleString() : val.toFixed(4).replace(/\.?0+$/, '');
   }
@@ -273,8 +273,8 @@ function formatMetricCell(val, colKey = '') {
 }
 
 /**
- * Loads `./benchmarks.json` (GPT-6's benchmark artifact) and renders the comparison table
- * with % accuracy formatting and source notes, falling back to `manifest.benchmarks` if needed.
+ * Loads `./benchmarks.json` (GPT-6's benchmark artifact, #62/#70) and renders the comparison
+ * table with % accuracy formatting and source notes, falling back to `manifest.benchmarks` if needed.
  */
 export async function loadBenchmarkTable(fallbackBenchmarks = null) {
   let benchData = null;
@@ -300,11 +300,7 @@ export async function loadBenchmarkTable(fallbackBenchmarks = null) {
     : [];
 
   if (benchSourceNote) {
-    // Restored from #62: label the rounded reported summary honestly.
     const noteText =
-      (benchData && benchData.source_type === 'reported_rounded_summary'
-        ? 'Reported Stage B results (rounded). Full evaluation reports pending.'
-        : null) ||
       source.note ||
       source.source_note ||
       source.description ||
@@ -399,7 +395,9 @@ function handleCheckpointStatus(status) {
       checkpoint.tokens_seen !== undefined
         ? Number(checkpoint.tokens_seen).toLocaleString()
         : '—';
-    const fileLabel = (checkpoint.resolvedUrl || '').split('/').pop() || 'manifest.json';
+    const fileLabel =
+      (checkpoint.resolvedUrl || '').split('/').pop() ||
+      (checkpoint.quant ? `${checkpoint.quant} · coming soon` : 'coming soon');
     ckptUrlTag.textContent = fileLabel;
   }
 
@@ -426,6 +424,10 @@ function handleCheckpointStatus(status) {
   metaSession.textContent = message || state;
   updateStageButtonsCacheBadges();
 
+  if (ckptComingSoonBanner) {
+    ckptComingSoonBanner.classList.toggle('hidden', state !== 'coming_soon');
+  }
+
   if (state === 'mounted' && session) {
     onnxSession = session;
     runtimeDot.classList.remove('error');
@@ -434,6 +436,11 @@ function handleCheckpointStatus(status) {
     if (!isGenerating && outputStream.querySelector('.muted')) {
       outputStream.innerHTML = `<span class="muted">Checkpoint <code>${checkpoint.resolvedUrl}</code> ready (${message}). Enter a prompt or click <b>New riddle</b> to generate.</span>`;
     }
+  } else if (state === 'coming_soon') {
+    onnxSession = null;
+    btnGenerate.disabled = true;
+    runtimeDot.classList.remove('error');
+    runtimeDot.classList.add('ready');
   } else if (state === 'loading' || state === 'compiling') {
     onnxSession = null;
     btnGenerate.disabled = true;
@@ -501,13 +508,18 @@ function renderManifestCheckpointsAndRiddles() {
   checkpointManager.setCheckpoints(ckpts);
 
   if (ckpts.length === 0) {
-    modelBadgeEl.textContent = 'Training in Progress (0 Exported Checkpoints)';
+    modelBadgeEl.textContent = 'Models Coming Soon';
     ckptEmptyState.classList.remove('hidden');
+    if (ckptComingSoonBanner) ckptComingSoonBanner.classList.add('hidden');
     ckptControls.classList.add('hidden');
-    metaStep.textContent = 'Stage C running';
+    metaStep.textContent = 'Stage C s3 running';
     metaTokens.textContent = '—';
   } else {
-    modelBadgeEl.textContent = `${ckpts.length} Checkpoint${ckpts.length === 1 ? '' : 's'}`;
+    const hostedCount = checkpointManager.checkpoints.filter((c) => Boolean(c.resolvedUrl)).length;
+    modelBadgeEl.textContent =
+      hostedCount > 0
+        ? `${hostedCount}/${ckpts.length} ONNX Ready`
+        : `${ckpts.length} Steps · ONNX Coming Soon`;
     ckptEmptyState.classList.add('hidden');
     ckptControls.classList.remove('hidden');
 
@@ -521,8 +533,9 @@ function renderManifestCheckpointsAndRiddles() {
       btn.type = 'button';
       btn.className = 'stage-btn';
       btn.dataset.idx = String(idx);
-      const label = c.label ? `${c.label}<br>` : '';
-      btn.innerHTML = `${label}Step ${c.step.toLocaleString()}<br><small>${c.tokens_seen.toLocaleString()} tok</small>`;
+      const label = c.label ? `${c.label} · ` : '';
+      const quantBadge = c.quant ? ` (${c.quant.toUpperCase()})` : '';
+      btn.innerHTML = `${label}Step ${c.step.toLocaleString()}${quantBadge}<br><small>${c.tokens_seen.toLocaleString()} tok</small>`;
       btn.addEventListener('click', () => {
         checkpointManager.selectIndex(idx).catch(() => {});
       });
@@ -532,7 +545,6 @@ function renderManifestCheckpointsAndRiddles() {
     checkpointManager.selectIndex(ckpts.length - 1).catch(() => {});
   }
 
-  // Ensure Riddle button is enabled and pre-populates the prompt box on boot
   const riddles =
     Array.isArray(manifest.riddle_prompts) && manifest.riddle_prompts.length > 0
       ? manifest.riddle_prompts
@@ -666,11 +678,6 @@ async function runOnnxGeneration() {
   }
 }
 
-/**
- * Picks a random riddle from `manifest.riddle_prompts`, places it into the prompt box,
- * and triggers ONNX generation if a checkpoint session is mounted (or shows tokenized
- * preview info while awaiting a mounted checkpoint).
- */
 async function handleNewRiddleClick() {
   const pool =
     Array.isArray(manifest.riddle_prompts) && manifest.riddle_prompts.length > 0
@@ -706,7 +713,7 @@ async function handleNewRiddleClick() {
     const noteSpan = document.createElement('div');
     noteSpan.className = 'muted';
     noteSpan.style.marginTop = '0.55rem';
-    noteSpan.textContent = `[Riddle #${index + 1}/${pool.length} loaded · ${tokenIds.length} BPE tokens: [${tokenIds.slice(0, 12).join(', ')}${tokenIds.length > 12 ? ', ...' : ''}] — mount an ONNX checkpoint to generate continuation]`;
+    noteSpan.textContent = `[Riddle #${index + 1}/${pool.length} tokenized · ${tokenIds.length} GPT-2 BPE tokens: [${tokenIds.slice(0, 12).join(', ')}${tokenIds.length > 12 ? ', ...' : ''}] — ONNX models coming soon]`;
     outputStream.appendChild(noteSpan);
   }
 }
