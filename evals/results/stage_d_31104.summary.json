@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "report_type": "reported_rounded_summary",
+  "publishable": true,
+  "model": "PlaygroundLM",
+  "checkpoint_id": "stage_d_31104",
+  "step": 31104,
+  "validation_split": "stage_c",
+  "metrics": {
+    "val_loss": 3.181,
+    "perplexity": 24.1,
+    "hellaswag_acc_norm": 0.3,
+    "lambada_acc": 0.245
+  },
+  "note": "Rounded from plm-stage-d-eval v1 FineWeb Stage C val.bin report (release stage-d-finetune-step31104). Exact: val_loss 3.1808407911020837, ppl 24.06698035054959, hellaswag 0.3004381597291376 (3017/10042), lambada 0.2447118183582379 (1261/5153). Same Stage C FineWeb val as Stage C final / GPT-2. Playground finetune val is SEPARATE (val_loss 5.234 on 2143 tok) \u2014 see stage_d_31104_playground_val.json."
+}
