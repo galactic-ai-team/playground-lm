@@ -1,4 +1,3 @@
-
 {
   "columns": [
     "val_loss",
@@ -56,6 +55,16 @@
       "lambada_acc": 0.19
     },
     {
+      "id": "step_00031101",
+      "label": "PlaygroundLM Stage C final — Step 31,101",
+      "step": 31101,
+      "validation_split": "stage_c",
+      "val_loss": 3.174,
+      "perplexity": 23.9,
+      "hellaswag_acc_norm": 0.3,
+      "lambada_acc": 0.23
+    },
+    {
       "id": "gpt2_124m",
       "label": "OpenAI GPT-2 124M (Stage C val)",
       "validation_split": "stage_c",
@@ -66,5 +75,5 @@
     }
   ],
   "source_type": "reported_rounded_summary",
-  "notes": "Rounded reported results. Stage B uses a different validation split and its val loss/PPL must not be directly compared with Stage C rows. Stage C s2 and GPT-2 use the same Stage C val.bin. Lower FineWeb-Edu validation loss does not establish superior general-purpose capabilities."
+  "notes": "Rounded reported results. Stage B uses a different validation split and its val loss/PPL must not be directly compared with Stage C rows. Stage C s1, s2, final (step 31,101, 3.06B tokens) and GPT-2 use the same Stage C val.bin. The final checkpoint has lower FineWeb-Edu validation loss than GPT-2 124M (3.174 vs 3.279), but still trails it on HellaSwag and LAMBADA. Lower FineWeb-Edu validation loss does not establish superior general-purpose capabilities."
 }

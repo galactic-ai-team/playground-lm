@@ -29,6 +29,7 @@ def test_demo_benchmark_schema():
         "step_00002035",
         "step_00010907",
         "step_00019366",
+        "step_00031101",
         "gpt2_124m",
     ]
 
@@ -73,6 +74,7 @@ def test_reported_scores_unchanged():
         (3.928, 50.8, 0.257, 0.091),
         (3.442, 31.3, 0.276, 0.185),
         (3.288, 26.8, 0.288, 0.19),
+        (3.174, 23.9, 0.3, 0.23),
         (3.279, 26.6, 0.309, 0.326),
     ]
 
@@ -81,6 +83,7 @@ def test_validation_splits_are_explicit():
     rows = load_table()["rows"]
     assert [row["validation_split"] for row in rows] == [
         "stage_b",
+        "stage_c",
         "stage_c",
         "stage_c",
         "stage_c",
@@ -93,11 +96,18 @@ def test_validation_splits_are_explicit():
 
 def test_no_overall_win_claim():
     table = load_table()
-    s2, gpt2 = table["rows"][2:4]
+    s2, final, gpt2 = table["rows"][2:5]
 
     assert s2["val_loss"] > gpt2["val_loss"]
     assert s2["hellaswag_acc_norm"] < gpt2["hellaswag_acc_norm"]
     assert s2["lambada_acc"] < gpt2["lambada_acc"]
+
+    # Final Stage C beats GPT-2 on same-split val loss only; downstream
+    # benchmarks still trail, so the notes must not claim an overall win.
+    assert final["val_loss"] < gpt2["val_loss"]
+    assert final["hellaswag_acc_norm"] < gpt2["hellaswag_acc_norm"]
+    assert final["lambada_acc"] < gpt2["lambada_acc"]
+    assert "does not establish superior" in table["notes"]
 
 
 def test_frontend_supports_group_headers():
