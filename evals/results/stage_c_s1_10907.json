@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "model": "/kaggle/working/ckpts/step_00010907.safetensors",
+  "backend": "playground",
+  "checkpoint_id": "stage_c_s1_10907",
+  "context_len": 1024,
+  "tokenizer": "gpt2",
+  "status": "complete",
+  "publishable": true,
+  "limits": {
+    "benchmark_examples": null,
+    "validation_batches": null
+  },
+  "row": {
+    "id": "stage_c_s1_10907",
+    "label": "Stage C s1 - 1.07B tokens (step 10907)",
+    "val_loss": 3.4422806663664853,
+    "perplexity": 31.258166385104012,
+    "hellaswag_acc_norm": 0.27594104760007965,
+    "lambada_acc": 0.18532893460120317
+  },
+  "preview_row": null,
+  "validation": {
+    "loss": 3.4422806663664853,
+    "perplexity": 31.258166385104012,
+    "tokens_scored": 3594909,
+    "available_targets": 3594909,
+    "coverage": 1.0,
+    "batches": 439,
+    "context_len": 1024,
+    "complete": true
+  },
+  "benchmarks": {
+    "hellaswag": {
+      "dataset": "Rowan/hellaswag",
+      "split": "validation",
+      "metric": "accuracy_normalized_completion_nll",
+      "accuracy": 0.27594104760007965,
+      "correct": 2771,
+      "examples": 10042,
+      "complete": true,
+      "expected_full_examples": 10042
+    },
+    "lambada": {
+      "dataset": "EleutherAI/lambada_openai",
+      "config": "default",
+      "split": "test",
+      "metric": "exact_last_word_token_accuracy",
+      "last_word_accuracy": 0.18532893460120317,
+      "correct": 955,
+      "examples": 5153,
+      "target_tokens": 6573,
+      "target_token_nll": 4.8842979725456654,
+      "target_word_perplexity": 507.88365285176224,
+      "target_token_perplexity": 132.19762638724114,
+      "complete": true,
+      "expected_full_examples": 5153
+    }
+  }
+}

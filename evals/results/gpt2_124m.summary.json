@@ -6,10 +6,10 @@
   "checkpoint_id": "gpt2_124m",
   "label": "OpenAI GPT-2 124M",
   "metrics": {
-    "val_loss": 3.255,
-    "perplexity": 25.9,
+    "val_loss": 3.279,
+    "perplexity": 26.6,
     "hellaswag_acc_norm": 0.309,
     "lambada_acc": 0.326
   },
-  "note": "Team-reported rounded GPT-2 baseline metrics. Not a complete evaluator report."
+  "note": "Demo row now uses Stage C val.bin GPT-2 numbers from plm-stage-c-s1-s2-eval v2 (see gpt2_124m_stagec_val.summary.json). Prior Stage-B-val rounded metrics were val_loss 3.255 / ppl 25.9 / hellaswag 0.309 / lambada 0.326."
 }

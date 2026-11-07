@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "model": "gpt2",
+  "backend": "hf",
+  "checkpoint_id": "gpt2_124m",
+  "context_len": 1024,
+  "tokenizer": "gpt2",
+  "validation": {
+    "loss": 3.2793690337936927,
+    "perplexity": 26.55900957443281,
+    "tokens_scored": 3594909,
+    "available_targets": 3594909,
+    "coverage": 1.0,
+    "batches": 439,
+    "context_len": 1024,
+    "complete": true
+  },
+  "benchmarks": {
+    "hellaswag": {
+      "dataset": "Rowan/hellaswag",
+      "split": "validation",
+      "metric": "accuracy_normalized_completion_nll",
+      "accuracy": 0.3093009360685122,
+      "correct": 3106,
+      "examples": 10042,
+      "complete": true,
+      "expected_full_examples": 10042
+    },
+    "lambada": {
+      "dataset": "EleutherAI/lambada_openai",
+      "config": "default",
+      "split": "test",
+      "metric": "exact_last_word_token_accuracy",
+      "last_word_accuracy": 0.32563555210556955,
+      "correct": 1678,
+      "examples": 5153,
+      "target_tokens": 6573,
+      "target_token_nll": 2.8930367769700442,
+      "target_word_perplexity": 40.055422858892136,
+      "target_token_perplexity": 18.04803432109117,
+      "complete": true,
+      "expected_full_examples": 5153
+    }
+  },
+  "row": {
+    "id": "gpt2_124m",
+    "label": "OpenAI GPT-2 124M",
+    "val_loss": 3.2793690337936927,
+    "perplexity": 26.55900957443281,
+    "hellaswag_acc_norm": 0.3093009360685122,
+    "lambada_acc": 0.32563555210556955
+  }
+}
