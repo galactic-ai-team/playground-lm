@@ -556,3 +556,19 @@ textarea#prompt-input:focus {
 .bench-table tr.active-stage-row {
   background: rgba(124, 247, 212, 0.09);
 }
+
+.bench-table thead .benchmark-group-row th {
+  text-align: center;
+  font-weight: 700;
+  border-bottom: 2px solid currentColor;
+  background: rgba(128, 128, 128, 0.12);
+  padding: 0.65rem 0.5rem;
+}
+
+.bench-table thead .benchmark-group-row th:first-child {
+  text-align: left;
+}
+
+.bench-table thead tr:not(.benchmark-group-row) th {
+  font-weight: 600;
+}
