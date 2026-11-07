@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "report_type": "reported_rounded_summary",
+  "publishable": true,
+  "model": "gpt2",
+  "checkpoint_id": "gpt2_124m_stagec_val",
+  "label": "OpenAI GPT-2 124M (Stage C val)",
+  "metrics": {
+    "val_loss": 3.279,
+    "perplexity": 26.6,
+    "hellaswag_acc_norm": 0.309,
+    "lambada_acc": 0.326
+  },
+  "note": "Rounded from plm-stage-c-s1-s2-eval v2 complete GPT-2 baseline on Stage C val.bin. Exact: val_loss 3.2793690337936927, ppl 26.55900957443281, hellaswag 0.3093009360685122 (3106/10042), lambada 0.32563555210556955 (1678/5153). Replaces prior Stage-B-val GPT-2 row (3.255/25.9) in demo/benchmarks.json."
+}
