@@ -483,6 +483,10 @@ textarea#prompt-input:focus {
   background: var(--amber);
 }
 
+.swatch-milestone {
+  background: #38bdf8;
+}
+
 .logit-bars {
   display: flex;
   flex-direction: column;

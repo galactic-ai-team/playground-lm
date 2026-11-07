@@ -7,12 +7,13 @@
  * - `./gpt2_bpe.js` (`loadGPT2Tokenizer`, `GPT2_EOT_ID`) for exact 50,257-vocab GPT-2 BPE.
  * - `./checkpoint_loader.js` (`CheckpointManager`, `resolveCheckpointUrl`) supporting relative/local
  *   ONNX paths and a clear "Models coming soon" banner when `onnx_url` is null/empty.
- * - `./loss_chart.js` (`renderLossChart`) reading `./loss_curve.json`.
+ * - `./loss_chart.js` (`renderLossChart`, `DEFAULT_STAGE_C_MILESTONES`) reading `./loss_curve.json`
+ *   and overlaying Stage-C session markers (2035 / 10907 / 19366 / 31101 target).
  * - "New riddle" button (`#btn-riddle`) picking a random riddle from `manifest.riddle_prompts`.
  */
 
 import { loadGPT2Tokenizer, GPT2_EOT_ID } from './gpt2_bpe.js';
-import { renderLossChart } from './loss_chart.js';
+import { renderLossChart, DEFAULT_STAGE_C_MILESTONES } from './loss_chart.js';
 import { CheckpointManager } from './checkpoint_loader.js';
 
 export const DEFAULT_RIDDLE_PROMPTS = [
@@ -54,6 +55,7 @@ const PERCENT_COLUMNS = new Set(['hellaswag_acc_norm', 'lambada_acc', 'hellaswag
 let manifest = {
   model: 'PlaygroundLM',
   checkpoints: [],
+  milestones: DEFAULT_STAGE_C_MILESTONES.slice(),
   benchmarks: {
     columns: ['val_loss', 'perplexity', 'hellaswag_acc_norm', 'lambada_acc'],
     rows: [],
@@ -121,6 +123,16 @@ const benchTableWrap = document.getElementById('bench-table-wrap');
 const benchThead = document.getElementById('bench-thead');
 const benchTbody = document.getElementById('bench-tbody');
 const benchSourceNote = document.getElementById('bench-source-note');
+
+function getActiveMilestones() {
+  if (Array.isArray(lossCurveData?.milestones) && lossCurveData.milestones.length > 0) {
+    return lossCurveData.milestones;
+  }
+  if (Array.isArray(manifest?.milestones) && manifest.milestones.length > 0) {
+    return manifest.milestones;
+  }
+  return DEFAULT_STAGE_C_MILESTONES;
+}
 
 /**
  * Picks a random riddle from `pool`, avoiding `lastIndex` when `pool.length > 1`.
@@ -468,6 +480,7 @@ function handleCheckpointStatus(status) {
   if (lossChartContainer && lossCurveData) {
     renderLossChart(lossChartContainer, lossCurveData, {
       activeStep: activeCheckpointStep,
+      milestones: getActiveMilestones(),
     });
   }
 
@@ -518,6 +531,10 @@ async function loadManifestAndArtifacts() {
       manifest = {
         model: parsed.model || 'PlaygroundLM',
         checkpoints: Array.isArray(parsed.checkpoints) ? parsed.checkpoints : [],
+        milestones:
+          Array.isArray(parsed.milestones) && parsed.milestones.length > 0
+            ? parsed.milestones
+            : DEFAULT_STAGE_C_MILESTONES.slice(),
         benchmarks: {
           columns: Array.isArray(parsed.benchmarks?.columns)
             ? parsed.benchmarks.columns
@@ -546,6 +563,7 @@ async function loadManifestAndArtifacts() {
   if (lossChartContainer) {
     renderLossChart(lossChartContainer, lossCurveData, {
       activeStep: activeCheckpointStep,
+      milestones: getActiveMilestones(),
     });
   }
 }
