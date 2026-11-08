@@ -1,42 +1,27 @@
 /**
- * PlaygroundLM Demo App — Strict Manifest, Benchmarks.json, GPT-2 BPE & Non-Reloading Checkpoint Slider
- *
- * Preserves:
- * - `loadBenchmarkTable()` reading `./benchmarks.json` (with % accuracy columns and source note,
- *   #62/#70) and falling back to `manifest.benchmarks` when needed.
- * - `./gpt2_bpe.js` (`loadGPT2Tokenizer`, `GPT2_EOT_ID`) for exact 50,257-vocab GPT-2 BPE.
- * - `./checkpoint_loader.js` (`CheckpointManager`, `resolveCheckpointUrl`) supporting relative/local
- *   ONNX paths and a clear "Models coming soon" banner when `onnx_url` is null/empty.
- * - `./loss_chart.js` (`renderLossChart`, `DEFAULT_STAGE_C_MILESTONES`) reading `./loss_curve.json`
- *   and overlaying Stage-C session markers (2035 / 10907 / 19366 / 31101 target).
- * - "New riddle" button (`#btn-riddle`) picking a random riddle from `manifest.riddle_prompts`.
+ * PlaygroundLM chat demo — simple conversation UI over local ONNX Runtime Web.
+ * Preserves exact GPT-2 BPE, SHA256 model integrity, and pinned ORT WASM 1.24.3.
  */
 
 import { loadGPT2Tokenizer, GPT2_EOT_ID } from './gpt2_bpe.js';
 import { renderLossChart, DEFAULT_STAGE_C_MILESTONES } from './loss_chart.js';
 import { CheckpointManager } from './checkpoint_loader.js';
+import {
+  createMessage,
+  formatChatPrompt,
+  trimMessagesToBudget,
+  setTextContent,
+  appendText,
+  isPinnedToBottom,
+  scrollToBottom,
+  handleComposerKeydown,
+  CONTEXT_LENGTH,
+} from './chat_state.js';
 
 export const DEFAULT_RIDDLE_PROMPTS = [
-  'Riddle: I have keys but no locks. I have space but no room. You can enter, but you cannot go outside. What am I? Answer:',
-  'Riddle: I have hands but I cannot clap, and a face that never smiles. What am I? Answer:',
-  'Riddle: The more of me you take, the more you leave behind. What am I? Answer:',
-  'Riddle: I speak without a mouth and hear without ears. I come alive with the wind. What am I? Answer:',
-  'Riddle: I have cities, but no houses. I have mountains, but no trees. I have water, but no fish. What am I? Answer:',
-  'Riddle: What gets wetter and wetter the more it dries? Answer:',
-  'Riddle: I follow you all day long in the sun, but disappear when the night comes. What am I? Answer:',
-  'Riddle: I have a single eye, yet I cannot see a thing. I pull a thread wherever I go. What am I? Answer:',
-  'Riddle: I am tall when I am young, and I am short when I am old. What am I? Answer:',
-  'Riddle: What has to be broken before you can cook and eat it? Answer:',
-  'Riddle: I have a neck with no head, and I hold water inside. What am I? Answer:',
-  'Riddle: I have teeth that cannot bite, and I glide through tangled hair. What am I? Answer:',
-  'Riddle: I fall from the clouds without ever getting hurt, and vanish when the sun gets warm. What am I? Answer:',
-  'Riddle: I am full of holes, yet I can still hold plenty of water. What am I? Answer:',
-  'Riddle: I have pages instead of leaves, and a spine with no bones. What am I? Answer:',
-  'Riddle: What runs around a whole yard without ever moving an inch? Answer:',
-  'Riddle: What belongs to you, yet other people use it far more than you do? Answer:',
-  'Riddle: I can fill an entire room without taking up any space at all. What am I? Answer:',
-  'Riddle: I have four legs in the morning, two at noon, and three in the evening, or I stand still beneath your dinner plate. What am I? Answer:',
-  'Riddle: Forward I am heavy, but backward I am not. What word am I? Answer:',
+  'Tell me a short riddle.',
+  'What has keys but no locks?',
+  'Explain gravity in one sentence.',
 ];
 
 const COLUMN_LABELS = {
@@ -48,56 +33,56 @@ const COLUMN_LABELS = {
   hellaswag_acc_norm: 'HellaSwag acc_norm (↑)',
   lambada_acc: 'LAMBADA acc (↑)',
 };
-
 const PERCENT_COLUMNS = new Set(['hellaswag_acc_norm', 'lambada_acc', 'hellaswag', 'lambada']);
 
-// State
 let manifest = {
   model: 'PlaygroundLM',
   checkpoints: [],
   milestones: DEFAULT_STAGE_C_MILESTONES.slice(),
-  benchmarks: {
-    columns: ['val_loss', 'perplexity', 'hellaswag_acc_norm', 'lambada_acc'],
-    rows: [],
-  },
+  benchmarks: { columns: ['val_loss', 'perplexity', 'hellaswag_acc_norm', 'lambada_acc'], rows: [] },
   riddle_prompts: DEFAULT_RIDDLE_PROMPTS.slice(),
 };
 let lossCurveData = null;
 let activeCheckpointStep = null;
-let lastRiddleIndex = -1;
 let onnxSession = null;
 let hasWebGPU = false;
 let isGenerating = false;
 let stopRequested = false;
-let activeGenerationPromise = null;
 let tokenizer = null;
 let checkpointManager = null;
+let chatMessages = [];
+let stickToBottom = true;
 
-// DOM Elements
-const modelTitleEl = document.getElementById('model-title');
-const modelBadgeEl = document.getElementById('model-badge');
 const runtimeDot = document.getElementById('runtime-dot');
 const runtimeLabel = document.getElementById('runtime-label');
+const statusText = document.getElementById('status-text');
+const statusMeta = document.getElementById('status-meta');
+const modelTitleEl = document.getElementById('model-title');
+const modelBadgeEl = document.getElementById('model-badge');
+
+const chatThread = document.getElementById('chat-thread');
+const welcomeCard = document.getElementById('welcome-card');
+const composer = document.getElementById('composer');
+const composerInput = document.getElementById('composer-input');
+const btnSend = document.getElementById('btn-send');
+const btnStop = document.getElementById('btn-stop');
+const btnNewChat = document.getElementById('btn-new-chat');
+const btnToggleAdvanced = document.getElementById('btn-toggle-advanced');
+const btnCloseAdvanced = document.getElementById('btn-close-advanced');
+const advancedPanel = document.getElementById('advanced-panel');
 
 const ckptEmptyState = document.getElementById('ckpt-empty-state');
 const ckptComingSoonBanner = document.getElementById('ckpt-coming-soon-banner');
 const ckptControls = document.getElementById('ckpt-controls');
 const ckptSlider = document.getElementById('ckpt-slider');
 const ckptStageButtons = document.getElementById('ckpt-stage-buttons');
-const ckptUrlTag = document.getElementById('ckpt-url-tag');
-
 const metaModel = document.getElementById('meta-model');
 const metaStep = document.getElementById('meta-step');
 const metaTokens = document.getElementById('meta-tokens');
 const metaSession = document.getElementById('meta-session');
-
-const btnRiddle = document.getElementById('btn-riddle');
-const btnToggleCustomOnnx = document.getElementById('btn-toggle-custom-onnx');
-const onnxUrlBar = document.getElementById('onnx-url-bar');
 const onnxUrlInput = document.getElementById('onnx-url-input');
 const btnFetchOnnx = document.getElementById('btn-fetch-onnx');
 
-const promptInput = document.getElementById('prompt-input');
 const tempSlider = document.getElementById('temp-slider');
 const tempVal = document.getElementById('temp-val');
 const topkSlider = document.getElementById('topk-slider');
@@ -108,51 +93,30 @@ const reppenSlider = document.getElementById('reppen-slider');
 const reppenVal = document.getElementById('reppen-val');
 const maxTokensSlider = document.getElementById('max-tokens-slider');
 const maxTokensVal = document.getElementById('max-tokens-val');
-const btnGenerate = document.getElementById('btn-generate');
-const btnStop = document.getElementById('btn-stop');
-
 const tokenizerStatus = document.getElementById('tokenizer-status');
 const tokSpeedEl = document.getElementById('tok-speed');
-const outputStream = document.getElementById('output-stream');
 const logitBars = document.getElementById('logit-bars');
 const inspectedTokenTag = document.getElementById('inspected-token-tag');
 const lossChartContainer = document.getElementById('loss-chart-container');
-
+const benchSourceNote = document.getElementById('bench-source-note');
 const benchEmptyState = document.getElementById('bench-empty-state');
 const benchTableWrap = document.getElementById('bench-table-wrap');
 const benchThead = document.getElementById('bench-thead');
 const benchTbody = document.getElementById('bench-tbody');
-const benchSourceNote = document.getElementById('bench-source-note');
 
-function getActiveMilestones() {
-  if (Array.isArray(lossCurveData?.milestones) && lossCurveData.milestones.length > 0) {
-    return lossCurveData.milestones;
-  }
-  if (Array.isArray(manifest?.milestones) && manifest.milestones.length > 0) {
-    return manifest.milestones;
-  }
-  return DEFAULT_STAGE_C_MILESTONES;
-}
+// Compatibility aliases for leftover helper references
+const promptInput = document.getElementById('prompt-input');
+const btnGenerate = document.getElementById('btn-generate');
+const btnRiddle = document.getElementById('btn-riddle');
 
-/**
- * Picks a random riddle from `pool`, avoiding `lastIndex` when `pool.length > 1`.
- */
 export function pickRandomRiddle(pool, lastIndex = -1) {
   const list = Array.isArray(pool) && pool.length > 0 ? pool : DEFAULT_RIDDLE_PROMPTS;
-  if (list.length === 1) {
-    return { text: list[0], index: 0 };
-  }
+  if (list.length === 1) return { text: list[0], index: 0 };
   let idx = Math.floor(Math.random() * list.length);
-  if (idx === lastIndex) {
-    idx = (idx + 1 + Math.floor(Math.random() * (list.length - 1))) % list.length;
-  }
+  if (idx === lastIndex) idx = (idx + 1) % list.length;
   return { text: list[idx], index: idx };
 }
 
-/**
- * Applies repetition penalty, Temperature scaling, Top-K filtering, and Top-P (nucleus)
- * cutoff over a Float32Array slice of vocabulary logits.
- */
 export function sampleLogits(
   logitsSlice,
   {
@@ -222,62 +186,6 @@ export function sampleLogits(
   };
 }
 
-async function detectWebGPU() {
-  if (typeof navigator !== 'undefined' && 'gpu' in navigator) {
-    try {
-      const adapter = await navigator.gpu.requestAdapter();
-      hasWebGPU = Boolean(adapter);
-    } catch {
-      hasWebGPU = false;
-    }
-  }
-  runtimeDot.classList.add('ready');
-  runtimeLabel.textContent = 'WASM · ONNX Runtime Web 1.24.3';
-}
-
-async function initTokenizer() {
-  const candidates = [
-    ['./vocab.json', './merges.txt'],
-    ['./encoder.json', './merges.txt'],
-    ['./tokenizer.json', './merges.txt'],
-  ];
-
-  for (const [vUrl, mUrl] of candidates) {
-    try {
-      const candidate = await loadGPT2Tokenizer(vUrl, mUrl);
-      if (candidate.vocabSize !== 50257 || candidate.eotId !== 50256 ||
-          JSON.stringify(candidate.encode("Hello world")) !== "[15496,995]") {
-        throw new Error("Invalid GPT-2 tokenizer assets");
-      }
-      tokenizer = candidate;
-      tokenizerStatus.textContent = `(GPT-2 BPE · ${tokenizer.vocabSize.toLocaleString()} tokens · EOT ${tokenizer.eotId})`;
-      return;
-    } catch {
-      // Try next candidate
-    }
-  }
-
-  tokenizer = null;
-  btnGenerate.disabled = true;
-  tokenizerStatus.textContent = '(GPT-2 tokenizer unavailable — generation disabled; reload to retry)';
-}
-
-function formatMetricCell(val, colKey = '') {
-  if (val === null || val === undefined || val === '') return '—';
-  if (typeof val === 'number') {
-    if (PERCENT_COLUMNS.has(colKey)) {
-      const pct = val <= 1.0 && val >= 0 ? val * 100 : val;
-      return `${pct.toFixed(1)}%`; // #62: 1 decimal (source values are rounded)
-    }
-    return Number.isInteger(val) ? val.toLocaleString() : val.toFixed(4).replace(/\.?0+$/, '');
-  }
-  return String(val);
-}
-
-/**
- * Loads `./benchmarks.json` (GPT-6's benchmark artifact, #62/#70) and renders the comparison
- * table with % accuracy formatting and source notes, falling back to `manifest.benchmarks` if needed.
- */
 export async function loadBenchmarkTable(fallbackBenchmarks = null) {
   let benchData = null;
 
@@ -426,398 +334,402 @@ export async function loadBenchmarkTable(fallbackBenchmarks = null) {
   }
 }
 
-function updateStageButtonsCacheBadges() {
-  if (!checkpointManager) return;
-  document.querySelectorAll('.stage-btn').forEach((btn) => {
-    const idx = Number(btn.dataset.idx);
-    const ckpt = checkpointManager.checkpoints[idx];
-    const cached = ckpt && checkpointManager.isCached(ckpt.resolvedUrl);
-    btn.classList.toggle('cached', Boolean(cached));
-  });
+function formatMetricCell(val, colKey = '') {
+  if (val === null || val === undefined || val === '') return '—';
+  if (typeof val === 'number') {
+    if (PERCENT_COLUMNS.has(colKey)) {
+      const pct = val <= 1.0 && val >= 0 ? val * 100 : val;
+      return `${pct.toFixed(1)}%`;
+    }
+    return Number.isInteger(val) ? val.toLocaleString() : val.toFixed(4).replace(/\.?0+$/, '');
+  }
+  return String(val);
+}
+
+function setStatus(text, { meta = '', ready = false, error = false } = {}) {
+  setTextContent(statusText, text);
+  setTextContent(statusMeta, meta);
+  runtimeDot.classList.toggle('ready', ready && !error);
+  runtimeDot.classList.toggle('error', error);
+  setTextContent(runtimeLabel, text);
+}
+
+function updateComposerEnabled() {
+  const ready = Boolean(tokenizer && onnxSession && !isGenerating);
+  composerInput.disabled = !tokenizer || isGenerating;
+  btnSend.disabled = !ready || !composerInput.value.trim();
+  btnStop.disabled = !isGenerating;
+  btnGenerate.disabled = !ready;
+}
+
+function clearChatMessages() {
+  chatMessages = [];
+  chatThread.querySelectorAll('.msg').forEach((n) => n.remove());
+  welcomeCard?.classList.remove('hidden');
+}
+
+function addMessageBubble(role, content, { pending = false, error = false } = {}) {
+  welcomeCard?.classList.add('hidden');
+  const wrap = document.createElement('div');
+  wrap.className = `msg ${role}${pending ? ' pending' : ''}${error ? ' error' : ''}`;
+  const roleEl = document.createElement('div');
+  roleEl.className = 'msg-role';
+  setTextContent(roleEl, role === 'user' ? 'You' : error ? 'Error' : 'PlaygroundLM');
+  const bubble = document.createElement('div');
+  bubble.className = 'msg-bubble';
+  setTextContent(bubble, content);
+  wrap.append(roleEl, bubble);
+  chatThread.appendChild(wrap);
+  if (stickToBottom) scrollToBottom(chatThread);
+  return bubble;
+}
+
+function renderLogitBars(candidates, stepLabel) {
+  setTextContent(inspectedTokenTag, stepLabel);
+  logitBars.replaceChildren();
+  for (const item of candidates || []) {
+    const tokStr = tokenizer ? tokenizer.decode(item.id) : `#${item.id}`;
+    const row = document.createElement('div');
+    row.className = 'logit-row';
+    const tok = document.createElement('span');
+    tok.className = 'logit-tok';
+    setTextContent(tok, `${JSON.stringify(tokStr)} (${item.id})`);
+    const track = document.createElement('div');
+    track.className = 'logit-bar-track';
+    const fill = document.createElement('div');
+    fill.className = 'logit-bar-fill';
+    fill.style.width = `${Math.max(2, item.prob * 100)}%`;
+    track.appendChild(fill);
+    const prob = document.createElement('span');
+    prob.className = 'logit-prob';
+    setTextContent(prob, `${(item.prob * 100).toFixed(1)}%`);
+    row.append(tok, track, prob);
+    logitBars.appendChild(row);
+  }
+}
+
+async function detectWebGPU() {
+  if (typeof navigator !== 'undefined' && 'gpu' in navigator) {
+    try {
+      const adapter = await navigator.gpu.requestAdapter();
+      hasWebGPU = Boolean(adapter);
+    } catch {
+      hasWebGPU = false;
+    }
+  }
+  setStatus('Loading tokenizer…', { meta: 'ORT Web 1.24.3 WASM' });
+}
+
+async function initTokenizer() {
+  const candidates = [
+    ['./vocab.json', './merges.txt'],
+    ['./encoder.json', './merges.txt'],
+    ['./tokenizer.json', './merges.txt'],
+  ];
+  for (const [vUrl, mUrl] of candidates) {
+    try {
+      const candidate = await loadGPT2Tokenizer(vUrl, mUrl);
+      if (
+        candidate.vocabSize !== 50257 ||
+        candidate.eotId !== 50256 ||
+        JSON.stringify(candidate.encode('Hello world')) !== '[15496,995]'
+      ) {
+        throw new Error('Invalid GPT-2 tokenizer assets');
+      }
+      tokenizer = candidate;
+      setTextContent(
+        tokenizerStatus,
+        `GPT-2 BPE · ${tokenizer.vocabSize.toLocaleString()} tokens · EOT ${tokenizer.eotId}`
+      );
+      composerInput.disabled = false;
+      updateComposerEnabled();
+      return;
+    } catch {
+      // try next
+    }
+  }
+  tokenizer = null;
+  setTextContent(tokenizerStatus, 'GPT-2 tokenizer unavailable — chat disabled');
+  setStatus('Tokenizer failed to load', { error: true });
+  updateComposerEnabled();
 }
 
 function handleCheckpointStatus(status) {
-  const { state, index, checkpoint, session, message } = status;
-
-  if (checkpoint) {
-    activeCheckpointStep = checkpoint.step !== undefined ? Number(checkpoint.step) : null;
-    metaStep.textContent =
-      activeCheckpointStep !== null ? activeCheckpointStep.toLocaleString() : '—';
-    metaTokens.textContent =
-      checkpoint.tokens_seen !== undefined
-        ? Number(checkpoint.tokens_seen).toLocaleString()
-        : '—';
-    const fileLabel =
-      (checkpoint.resolvedUrl || '').split('/').pop() ||
-      (checkpoint.quant ? `${checkpoint.quant} · coming soon` : 'coming soon');
-    ckptUrlTag.textContent = fileLabel;
-  }
-
-  if (index >= 0) {
-    ckptSlider.value = String(index);
-    document.querySelectorAll('.stage-btn').forEach((btn) => {
-      btn.classList.toggle('active', Number(btn.dataset.idx) === index);
-    });
-  }
-
-  document.querySelectorAll('#bench-tbody tr').forEach((tr) => {
-    tr.classList.toggle(
-      'active-stage-row',
-      tr.dataset.step !== undefined && Number(tr.dataset.step) === activeCheckpointStep
-    );
+  const { state, index, checkpoint, session, message, loadedBytes, totalBytes } = status;
+  if (ckptSlider && index !== undefined && index >= 0) ckptSlider.value = String(index);
+  document.querySelectorAll('.stage-btn').forEach((btn) => {
+    btn.classList.toggle('active', Number(btn.dataset.idx) === index);
   });
-
-  if (lossChartContainer && lossCurveData) {
-    renderLossChart(lossChartContainer, lossCurveData, {
-      activeStep: activeCheckpointStep,
-      milestones: getActiveMilestones(),
-    });
-  }
-
-  metaSession.textContent = message || state;
-  updateStageButtonsCacheBadges();
-
-  if (ckptComingSoonBanner) {
-    ckptComingSoonBanner.classList.toggle('hidden', state !== 'coming_soon');
+  if (checkpoint) {
+    activeCheckpointStep = checkpoint.step;
+    setTextContent(metaModel, manifest.model || 'PlaygroundLM');
+    setTextContent(metaStep, Number(checkpoint.step).toLocaleString());
+    setTextContent(metaTokens, Number(checkpoint.tokens_seen || 0).toLocaleString());
+    setTextContent(modelBadgeEl, checkpoint.label || `step ${checkpoint.step}`);
   }
 
   if (state === 'mounted' && session) {
     onnxSession = session;
-    runtimeDot.classList.remove('error');
-    runtimeDot.classList.add('ready');
-    btnGenerate.disabled = isGenerating || !tokenizer;
-    if (!isGenerating && outputStream.querySelector('.muted')) {
-      outputStream.innerHTML = `<span class="muted">Checkpoint <code>${checkpoint.resolvedUrl}</code> ready (${message}). Enter a prompt or click <b>New riddle</b> to generate.</span>`;
-    }
+    setTextContent(metaSession, message || 'Ready');
+    setStatus('Model ready', {
+      ready: true,
+      meta: checkpoint ? `${checkpoint.label || 'step ' + checkpoint.step}` : '',
+    });
+  } else if (state === 'loading') {
+    onnxSession = null;
+    const pct = totalBytes ? ` ${Math.round((loadedBytes / totalBytes) * 100)}%` : '';
+    setStatus(message || `Downloading model…${pct}`, { meta: '≈171 MB first load' });
+    setTextContent(metaSession, message || 'Downloading');
+  } else if (state === 'compiling') {
+    onnxSession = null;
+    setStatus(message || 'Compiling WASM…', { meta: 'one-time per checkpoint' });
+    setTextContent(metaSession, message || 'Compiling');
   } else if (state === 'coming_soon') {
     onnxSession = null;
-    btnGenerate.disabled = true;
-    runtimeDot.classList.remove('error');
-    runtimeDot.classList.add('ready');
-  } else if (state === 'loading' || state === 'compiling') {
-    onnxSession = null;
-    btnGenerate.disabled = true;
+    setStatus('Model URL missing for this checkpoint', { error: true });
+    setTextContent(metaSession, 'Unavailable');
   } else if (state === 'error') {
     onnxSession = null;
-    btnGenerate.disabled = true;
-    runtimeDot.classList.remove('ready');
-    runtimeDot.classList.add('error');
-    outputStream.innerHTML = `<span class="muted">Failed to load ONNX checkpoint from <code>${checkpoint?.resolvedUrl || ''}</code>: ${status.error?.message || message}</span>`;
+    setStatus(message || 'Model load failed', { error: true });
+    setTextContent(metaSession, message || 'Error');
   } else if (state === 'unmounted') {
     onnxSession = null;
-    btnGenerate.disabled = true;
   }
+  updateComposerEnabled();
+}
+
+function renderManifestCheckpoints() {
+  setTextContent(modelTitleEl, manifest.model || 'PlaygroundLM');
+  setTextContent(metaModel, manifest.model || 'PlaygroundLM');
+  const ckpts = manifest.checkpoints || [];
+  checkpointManager.setCheckpoints(ckpts);
+  if (!ckpts.length) {
+    ckptEmptyState.classList.remove('hidden');
+    ckptControls.classList.add('hidden');
+    return;
+  }
+  ckptEmptyState.classList.add('hidden');
+  ckptControls.classList.remove('hidden');
+  if (ckptComingSoonBanner) {
+    const pending = ckpts.some((c) => !c.onnx_url);
+    ckptComingSoonBanner.classList.toggle('hidden', !pending);
+    if (pending) setTextContent(ckptComingSoonBanner, 'Some checkpoints still lack hosted ONNX URLs.');
+  }
+  ckptSlider.min = '0';
+  ckptSlider.max = String(ckpts.length - 1);
+  ckptSlider.value = String(ckpts.length - 1);
+  ckptStageButtons.replaceChildren();
+  checkpointManager.checkpoints.forEach((c, idx) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'stage-btn';
+    btn.dataset.idx = String(idx);
+    btn.innerHTML = '';
+    const label = document.createElement('div');
+    setTextContent(label, `${c.label || 'Step'} · ${Number(c.step).toLocaleString()}${c.quant ? ' (' + c.quant.toUpperCase() + ')' : ''}`);
+    const small = document.createElement('small');
+    setTextContent(small, `${Number(c.tokens_seen || 0).toLocaleString()} tok`);
+    btn.append(label, small);
+    btn.addEventListener('click', () => {
+      if (!isGenerating) checkpointManager.selectIndex(idx).catch(() => {});
+    });
+    ckptStageButtons.appendChild(btn);
+  });
+  checkpointManager.selectIndex(ckpts.length - 1).catch(() => {});
 }
 
 async function loadManifestAndArtifacts() {
   try {
     const res = await fetch('./manifest.json', { cache: 'no-store' });
     if (res.ok) {
-      const parsed = await res.json();
-      const loadedRiddles =
-        Array.isArray(parsed.riddle_prompts) && parsed.riddle_prompts.length > 0
-          ? parsed.riddle_prompts
-          : DEFAULT_RIDDLE_PROMPTS.slice();
+      const data = await res.json();
       manifest = {
-        model: parsed.model || 'PlaygroundLM',
-        checkpoints: Array.isArray(parsed.checkpoints) ? parsed.checkpoints : [],
-        milestones:
-          Array.isArray(parsed.milestones) && parsed.milestones.length > 0
-            ? parsed.milestones
-            : DEFAULT_STAGE_C_MILESTONES.slice(),
-        benchmarks: {
-          columns: Array.isArray(parsed.benchmarks?.columns)
-            ? parsed.benchmarks.columns
-            : ['val_loss', 'perplexity', 'hellaswag_acc_norm', 'lambada_acc'],
-          rows: Array.isArray(parsed.benchmarks?.rows) ? parsed.benchmarks.rows : [],
-        },
-        riddle_prompts: loadedRiddles,
+        ...manifest,
+        ...data,
+        milestones: data.milestones || DEFAULT_STAGE_C_MILESTONES.slice(),
+        riddle_prompts: data.riddle_prompts || DEFAULT_RIDDLE_PROMPTS.slice(),
       };
     }
-  } catch (err) {
-    console.warn('Could not load ./manifest.json, using default riddle prompts:', err);
+  } catch {
+    // keep defaults
   }
-
+  await loadBenchmarkTable(manifest.benchmarks);
   try {
     const lossRes = await fetch('./loss_curve.json', { cache: 'no-store' });
     if (lossRes.ok) {
       lossCurveData = await lossRes.json();
+      renderLossChart(lossChartContainer, lossCurveData, {
+        milestones: manifest.milestones || DEFAULT_STAGE_C_MILESTONES,
+        activeStep: activeCheckpointStep,
+      });
     }
   } catch {
-    lossCurveData = null;
+    setTextContent(lossChartContainer, 'Loss curve unavailable.');
   }
-
-  renderManifestCheckpointsAndRiddles();
-  await loadBenchmarkTable(manifest.benchmarks);
-
-  if (lossChartContainer) {
-    renderLossChart(lossChartContainer, lossCurveData, {
-      activeStep: activeCheckpointStep,
-      milestones: getActiveMilestones(),
-    });
-  }
+  renderManifestCheckpoints();
 }
 
-function renderManifestCheckpointsAndRiddles() {
-  modelTitleEl.textContent = manifest.model || 'PlaygroundLM';
-  metaModel.textContent = manifest.model || 'PlaygroundLM';
-
-  const ckpts = manifest.checkpoints || [];
-  checkpointManager.setCheckpoints(ckpts);
-
-  if (ckpts.length === 0) {
-    modelBadgeEl.textContent = 'Models Coming Soon';
-    ckptEmptyState.classList.remove('hidden');
-    if (ckptComingSoonBanner) ckptComingSoonBanner.classList.add('hidden');
-    ckptControls.classList.add('hidden');
-    metaStep.textContent = 'Stage C s3 running';
-    metaTokens.textContent = '—';
-  } else {
-    const hostedCount = checkpointManager.checkpoints.filter((c) => Boolean(c.resolvedUrl)).length;
-    modelBadgeEl.textContent =
-      hostedCount > 0
-        ? `${hostedCount}/${ckpts.length} ONNX Ready`
-        : `${ckpts.length} Steps · ONNX Coming Soon`;
-    ckptEmptyState.classList.add('hidden');
-    ckptControls.classList.remove('hidden');
-
-    ckptSlider.min = '0';
-    ckptSlider.max = String(ckpts.length - 1);
-    ckptSlider.value = String(ckpts.length - 1);
-    ckptStageButtons.innerHTML = '';
-
-    checkpointManager.checkpoints.forEach((c, idx) => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'stage-btn';
-      btn.dataset.idx = String(idx);
-      const label = c.label ? `${c.label} · ` : '';
-      const quantBadge = c.quant ? ` (${c.quant.toUpperCase()})` : '';
-      btn.innerHTML = `${label}Step ${c.step.toLocaleString()}${quantBadge}<br><small>${c.tokens_seen.toLocaleString()} tok</small>`;
-      btn.addEventListener('click', () => {
-        !isGenerating && checkpointManager.selectIndex(idx).catch(() => {});
-      });
-      ckptStageButtons.appendChild(btn);
-    });
-
-    checkpointManager.selectIndex(ckpts.length - 1).catch(() => {});
-  }
-
-  const riddles =
-    Array.isArray(manifest.riddle_prompts) && manifest.riddle_prompts.length > 0
-      ? manifest.riddle_prompts
-      : DEFAULT_RIDDLE_PROMPTS;
-  btnRiddle.disabled = false;
-  btnRiddle.textContent = '🧩 New riddle';
-  if (!promptInput.value.trim()) {
-    const initial = pickRandomRiddle(riddles, lastRiddleIndex);
-    lastRiddleIndex = initial.index;
-    promptInput.value = initial.text;
-  }
-}
-
-function renderLogitBars(candidates, stepLabel) {
-  inspectedTokenTag.textContent = stepLabel;
-  logitBars.innerHTML = '';
-
-  for (const item of candidates) {
-    const tokStr = tokenizer ? tokenizer.decode(item.id) : `#${item.id}`;
-    const pct = (item.prob * 100).toFixed(1);
-    const row = document.createElement('div');
-    row.className = 'logit-row';
-    row.innerHTML = `
-      <span class="logit-tok" title="Token ID ${item.id}">${JSON.stringify(tokStr)} <small class="muted">(${item.id})</small></span>
-      <div class="logit-bar-track">
-        <div class="logit-bar-fill" style="width: ${Math.max(2, item.prob * 100)}%"></div>
-      </div>
-      <span class="logit-prob">${pct}%</span>
-    `;
-    logitBars.appendChild(row);
-  }
-}
-
-async function runOnnxGeneration() {
+async function runChatGeneration(userText) {
   const ort = checkpointManager?.ortModule;
   if (isGenerating || !onnxSession || !ort || !tokenizer) return;
+  const cleaned = String(userText || '').trim();
+  if (!cleaned) return;
 
   isGenerating = true;
   stopRequested = false;
-  btnGenerate.disabled = true;
-  btnStop.disabled = false;
+  updateComposerEnabled();
 
-  const promptText = promptInput.value || ' ';
-  const temperature = parseFloat(tempSlider.value);
-  const topK = parseInt(topkSlider.value, 10);
-  const topP = toppSlider ? parseFloat(toppSlider.value) : 0.92;
-  const repetitionPenalty = reppenSlider ? parseFloat(reppenSlider.value) : 1.1;
+  chatMessages.push(createMessage('user', cleaned));
+  addMessageBubble('user', cleaned);
+  const assistantBubble = addMessageBubble('assistant', 'Thinking…', { pending: true });
+
   const maxNewTokens = parseInt(maxTokensSlider.value, 10);
-
-  outputStream.innerHTML = '';
-  const promptSpan = document.createElement('span');
-  promptSpan.className = 'tok-prompt';
-  promptSpan.textContent = promptText;
-  outputStream.appendChild(promptSpan);
-
-  const inputIds = tokenizer.encode(promptText);
+  const packed = trimMessagesToBudget(chatMessages, (t) => tokenizer.encode(t), {
+    contextLength: CONTEXT_LENGTH,
+    reserveNewTokens: maxNewTokens,
+  });
+  let inputIds = packed.inputIds.slice();
   if (!inputIds.length) inputIds.push(GPT2_EOT_ID);
   const eotId = tokenizer.eotId ?? GPT2_EOT_ID;
-  const stepHistory = [];
+  const stream = tokenizer.createStreamDecoder();
+  let reply = '';
   const t0 = performance.now();
 
   try {
+    assistantBubble.parentElement.classList.remove('pending');
+    setTextContent(assistantBubble, '');
     for (let step = 0; step < maxNewTokens; step++) {
       if (stopRequested) break;
-
-      const contextIds = inputIds.slice(-1024);
-      const bigIntIds = BigInt64Array.from(contextIds.map((id) => BigInt(id)));
-      const inputTensor = new ort.Tensor('int64', bigIntIds, [1, contextIds.length]);
-
+      const contextIds = inputIds.slice(-CONTEXT_LENGTH);
+      const inputTensor = new ort.Tensor(
+        'int64',
+        BigInt64Array.from(contextIds.map((id) => BigInt(id))),
+        [1, contextIds.length]
+      );
       const results = await onnxSession.run({ input_ids: inputTensor });
       const logitsTensor = results.logits ?? results[Object.keys(results)[0]];
       if (!logitsTensor) {
         inputTensor.dispose?.();
-        throw new Error('ONNX output did not contain a "logits" tensor.');
+        throw new Error('ONNX output did not contain a logits tensor.');
       }
-
       const dims = logitsTensor.dims;
       const vocabSize = dims[dims.length - 1];
       const seqLen = dims.length >= 2 ? dims[dims.length - 2] : 1;
       const lastPosOffset = (seqLen - 1) * vocabSize;
-      const lastTokenLogits = logitsTensor.data.subarray(
-        lastPosOffset,
-        lastPosOffset + vocabSize
-      );
-
+      const lastTokenLogits = logitsTensor.data.subarray(lastPosOffset, lastPosOffset + vocabSize);
       const { chosenId, topCandidates } = sampleLogits(lastTokenLogits, {
-        temperature,
-        topK,
-        topP,
-        repetitionPenalty,
+        temperature: parseFloat(tempSlider.value),
+        topK: parseInt(topkSlider.value, 10),
+        topP: parseFloat(toppSlider.value),
+        repetitionPenalty: parseFloat(reppenSlider.value),
         recentTokenIds: inputIds,
       });
-
       inputTensor.dispose?.();
       for (const tensor of Object.values(results)) tensor.dispose?.();
 
       if (chosenId === eotId) {
-        renderLogitBars(topCandidates, `step #${step + 1} (<|endoftext|> reached)`);
+        renderLogitBars(topCandidates, `stop · eot · step ${step + 1}`);
         break;
       }
-
       inputIds.push(chosenId);
-
-      const decodedPiece = tokenizer.decode(chosenId);
-      const histIdx = stepHistory.length;
-      stepHistory.push({ step: step + 1, chosenId, decodedPiece, topCandidates });
-
-      const span = document.createElement('span');
-      span.className = 'tok-gen';
-      span.textContent = decodedPiece;
-      span.title = `Token ID: ${chosenId} (click to inspect logits)`;
-      span.addEventListener('click', () => {
-        document.querySelectorAll('.tok-gen.selected').forEach((el) => el.classList.remove('selected'));
-        span.classList.add('selected');
-        const h = stepHistory[histIdx];
-        renderLogitBars(h.topCandidates, `step #${h.step} (id ${h.chosenId})`);
-      });
-      outputStream.appendChild(span);
-
-      renderLogitBars(topCandidates, `step #${step + 1} (live)`);
-
+      const piece = stream.pushToken(chosenId);
+      if (piece) {
+        reply += piece;
+        appendText(assistantBubble, piece);
+        if (stickToBottom) scrollToBottom(chatThread);
+      }
+      // Soft stop if the model starts a new user turn.
+      if (/\nUser:\s*$/.test(reply) || reply.includes('\nUser:')) {
+        reply = reply.split('\nUser:')[0].replace(/\s+$/, '');
+        setTextContent(assistantBubble, reply);
+        break;
+      }
+      renderLogitBars(topCandidates, `step ${step + 1}`);
       const elapsedSec = Math.max((performance.now() - t0) / 1000, 0.001);
-      tokSpeedEl.textContent = `${((step + 1) / elapsedSec).toFixed(1)} tok/s`;
-
+      setTextContent(tokSpeedEl, `${((step + 1) / elapsedSec).toFixed(1)} tok/s`);
       await new Promise((r) => requestAnimationFrame(r));
     }
+    reply += stream.flush();
+    setTextContent(assistantBubble, reply || (stopRequested ? '(stopped)' : '(empty reply)'));
+    chatMessages.push(createMessage('assistant', reply || ''));
   } catch (err) {
-    const errSpan = document.createElement('div');
-    errSpan.className = 'empty-banner';
-    errSpan.textContent = `ONNX Inference Error: ${err.message}`;
-    outputStream.appendChild(errSpan);
+    setTextContent(assistantBubble, `Generation failed: ${err.message}`);
+    assistantBubble.parentElement.classList.add('error');
   } finally {
     isGenerating = false;
-    btnGenerate.disabled = !onnxSession || !tokenizer;
-    btnStop.disabled = true;
+    updateComposerEnabled();
+    composerInput.focus();
   }
 }
 
-async function handleNewRiddleClick() {
-  const pool =
-    Array.isArray(manifest.riddle_prompts) && manifest.riddle_prompts.length > 0
-      ? manifest.riddle_prompts
-      : DEFAULT_RIDDLE_PROMPTS;
-
-  const { text, index } = pickRandomRiddle(pool, lastRiddleIndex);
-  lastRiddleIndex = index;
-  promptInput.value = text;
-
-  if (isGenerating) {
-    stopRequested = true;
-    if (activeGenerationPromise) {
-      try {
-        await activeGenerationPromise;
-      } catch {
-        // Ignore cancellation errors
-      }
-    }
-  }
-
-  if (onnxSession && checkpointManager?.ortModule) {
-    activeGenerationPromise = runOnnxGeneration();
-    await activeGenerationPromise;
-  } else if (tokenizer) {
-    const tokenIds = tokenizer.encode(text);
-    outputStream.innerHTML = '';
-    const promptSpan = document.createElement('span');
-    promptSpan.className = 'tok-prompt';
-    promptSpan.textContent = text;
-    outputStream.appendChild(promptSpan);
-
-    const noteSpan = document.createElement('div');
-    noteSpan.className = 'muted';
-    noteSpan.style.marginTop = '0.55rem';
-    noteSpan.textContent = `[Riddle #${index + 1}/${pool.length} tokenized · ${tokenIds.length} GPT-2 BPE tokens: [${tokenIds.slice(0, 12).join(', ')}${tokenIds.length > 12 ? ', ...' : ''}] — ONNX models coming soon]`;
-    outputStream.appendChild(noteSpan);
-  }
+function toggleAdvanced(show) {
+  const open = show ?? advancedPanel.classList.contains('hidden');
+  advancedPanel.classList.toggle('hidden', !open);
+  advancedPanel.hidden = !open;
+  btnToggleAdvanced.setAttribute('aria-expanded', open ? 'true' : 'false');
 }
 
-// Event Listeners
+function autosizeComposer() {
+  composerInput.style.height = 'auto';
+  composerInput.style.height = `${Math.min(composerInput.scrollHeight, 144)}px`;
+}
+
+chatThread.addEventListener('scroll', () => {
+  stickToBottom = isPinnedToBottom(chatThread);
+});
+
+composerInput.addEventListener('input', () => {
+  autosizeComposer();
+  updateComposerEnabled();
+});
+composerInput.addEventListener('keydown', (event) => {
+  handleComposerKeydown(event, {
+    isDisabled: () => btnSend.disabled,
+    onSend: () => composer.requestSubmit(),
+  });
+});
+composer.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const text = composerInput.value.trim();
+  if (!text || btnSend.disabled) return;
+  composerInput.value = '';
+  autosizeComposer();
+  updateComposerEnabled();
+  runChatGeneration(text).catch(() => {});
+});
+btnStop.addEventListener('click', () => {
+  stopRequested = true;
+});
+btnNewChat.addEventListener('click', () => {
+  if (isGenerating) stopRequested = true;
+  clearChatMessages();
+  composerInput.focus();
+});
+btnToggleAdvanced.addEventListener('click', () => toggleAdvanced());
+btnCloseAdvanced.addEventListener('click', () => toggleAdvanced(false));
+document.getElementById('suggestion-row')?.addEventListener('click', (event) => {
+  const btn = event.target.closest('[data-prompt]');
+  if (!btn) return;
+  composerInput.value = btn.getAttribute('data-prompt') || '';
+  autosizeComposer();
+  updateComposerEnabled();
+  composerInput.focus();
+});
+
 ckptSlider.addEventListener('input', (e) => {
   const idx = Number(e.target.value);
-  !isGenerating && checkpointManager?.selectIndex(idx).catch(() => {});
+  if (!isGenerating) checkpointManager?.selectIndex(idx).catch(() => {});
 });
-
-tempSlider.addEventListener('input', (e) => (tempVal.textContent = Number(e.target.value).toFixed(2)));
-topkSlider.addEventListener('input', (e) => (topkVal.textContent = e.target.value));
-if (toppSlider) {
-  toppSlider.addEventListener('input', (e) => (toppVal.textContent = Number(e.target.value).toFixed(2)));
-}
-if (reppenSlider) {
-  reppenSlider.addEventListener('input', (e) => (reppenVal.textContent = Number(e.target.value).toFixed(2)));
-}
-maxTokensSlider.addEventListener('input', (e) => (maxTokensVal.textContent = e.target.value));
-
-btnRiddle.addEventListener('click', () => {
-  handleNewRiddleClick().catch(() => {});
-});
-
-btnToggleCustomOnnx.addEventListener('click', () => {
-  onnxUrlBar.classList.toggle('hidden');
-});
-
+tempSlider.addEventListener('input', (e) => setTextContent(tempVal, Number(e.target.value).toFixed(2)));
+topkSlider.addEventListener('input', (e) => setTextContent(topkVal, e.target.value));
+toppSlider.addEventListener('input', (e) => setTextContent(toppVal, Number(e.target.value).toFixed(2)));
+reppenSlider.addEventListener('input', (e) => setTextContent(reppenVal, Number(e.target.value).toFixed(2)));
+maxTokensSlider.addEventListener('input', (e) => setTextContent(maxTokensVal, e.target.value));
 btnFetchOnnx.addEventListener('click', () => {
   const url = onnxUrlInput.value.trim();
   if (url && !isGenerating) checkpointManager?.mountCustomUrl(url).catch(() => {});
 });
 
-btnGenerate.addEventListener('click', () => {
-  activeGenerationPromise = runOnnxGeneration();
-});
-btnStop.addEventListener('click', () => {
-  stopRequested = true;
-});
-
-// Boot
 await detectWebGPU();
 checkpointManager = new CheckpointManager({
   hasWebGPU,
@@ -826,3 +738,4 @@ checkpointManager = new CheckpointManager({
 });
 await initTokenizer();
 await loadManifestAndArtifacts();
+updateComposerEnabled();

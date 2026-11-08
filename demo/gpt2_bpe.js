@@ -107,6 +107,42 @@ export function parseMerges(mergesInput) {
  * @param {Record<string, number>} vocabObj - Mapping of BPE token string -> integer ID
  * @param {string | string[] | Map<string, number>} mergesInput - Contents of `merges.txt` or parsed rank Map
  */
+
+/**
+ * Convert GPT-2 token IDs into the raw UTF-8 byte sequence they represent.
+ * Incomplete multi-byte characters may appear at the end of a prefix of tokens.
+ */
+export function tokenIdsToBytes(decoderMap, byteDecoder, ids) {
+  const list = typeof ids === 'number' ? [ids] : Array.from(ids || []);
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const tok = decoderMap.get(Number(list[i]));
+    if (tok === undefined || tok === GPT2_EOT_TOKEN) continue;
+    for (let j = 0; j < tok.length; j++) {
+      const b = byteDecoder.get(tok[j]);
+      if (b !== undefined) out.push(b);
+    }
+  }
+  return new Uint8Array(out);
+}
+
+/**
+ * Incremental UTF-8 decoder for token-by-token generation.
+ * Prevents mojibake like "I��m" when a multi-byte character spans tokens.
+ */
+export function createUtf8StreamDecoder() {
+  const decoder = new TextDecoder('utf-8', { fatal: false });
+  return {
+    push(bytes) {
+      if (!bytes || bytes.length === 0) return '';
+      return decoder.decode(bytes, { stream: true });
+    },
+    flush() {
+      return decoder.decode();
+    },
+  };
+}
+
 export function createGPT2Tokenizer(vocabObj, mergesInput) {
   const { byteEncoder, byteDecoder } = bytesToUnicode();
   const encoder = new Map();
@@ -310,11 +346,32 @@ export function createGPT2Tokenizer(vocabObj, mergesInput) {
     return decodeByteString(text, byteDecoder, utf8Decoder);
   }
 
+  function decodeBytes(ids) {
+    return tokenIdsToBytes(decoder, byteDecoder, ids);
+  }
+
+  function createStreamDecoder() {
+    const stream = createUtf8StreamDecoder();
+    return {
+      pushToken(id) {
+        return stream.push(decodeBytes(id));
+      },
+      pushTokens(ids) {
+        return stream.push(decodeBytes(ids));
+      },
+      flush() {
+        return stream.flush();
+      },
+    };
+  }
+
   return {
     vocabSize: encoder.size,
     eotId: encoder.get(GPT2_EOT_TOKEN) ?? GPT2_EOT_ID,
     encode,
     decode,
+    decodeBytes,
+    createStreamDecoder,
     bpe,
   };
 }
