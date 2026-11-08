@@ -49,7 +49,7 @@ export class CheckpointManager {
    * @param {number} [options.maxCachedSessions=3]
    * @param {(status: object) => void} [options.onStatusChange]
    */
-  constructor({ hasWebGPU = false, maxCachedSessions = 3, onStatusChange = () => {} } = {}) {
+  constructor({ hasWebGPU = false, maxCachedSessions = 1, onStatusChange = () => {} } = {}) {
     this.hasWebGPU = Boolean(hasWebGPU);
     this.maxCachedSessions = Math.max(1, maxCachedSessions);
     this.onStatusChange = onStatusChange;
@@ -88,7 +88,9 @@ export class CheckpointManager {
 
   async ensureOrt() {
     if (!this.ortModule) {
-      this.ortModule = await import('https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.mjs');
+      this.ortModule = await import('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/ort.wasm.min.mjs');
+      this.ortModule.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/';
+      this.ortModule.env.wasm.numThreads = 1;
     }
     return this.ortModule;
   }
@@ -196,10 +198,10 @@ export class CheckpointManager {
         cached: true,
         byteLength: entry.byteLength,
         session: entry.session,
-        message: `Cached (${this.hasWebGPU ? 'WebGPU' : 'WASM'})`,
+        message: `Cached (WASM)`,
       });
 
-      this.prefetchNeighbors(index);
+      // No speculative 170MB downloads on mobile.
       return { session: entry.session, checkpoint: ckpt, cached: true };
     }
 
@@ -239,20 +241,26 @@ export class CheckpointManager {
       );
 
       if (reqId !== this.mountRequestId) return null;
+      await verifyModelBytes(buffer, ckpt);
+      // Release old sessions before compiling another large checkpoint.
+      if (this.maxCachedSessions === 1) {
+        for (const entry of this.sessionCache.values()) await entry.session?.release?.();
+        this.sessionCache.clear();
+      }
 
       this.onStatusChange({
         state: 'compiling',
         index,
         checkpoint: ckpt,
         cached: false,
-        message: `Compiling ONNX (${this.hasWebGPU ? 'WebGPU' : 'WASM'})...`,
+        message: `Compiling ONNX (WASM)...`,
       });
 
       const session = await ort.InferenceSession.create(buffer, {
-        executionProviders: this.hasWebGPU ? ['webgpu', 'wasm'] : ['wasm'],
+        executionProviders: ['wasm'],
       });
 
-      if (reqId !== this.mountRequestId) return null;
+      if (reqId !== this.mountRequestId) { await session.release(); return null; }
 
       this.putCache(url, {
         session,
@@ -267,10 +275,10 @@ export class CheckpointManager {
         cached: false,
         byteLength: buffer.byteLength,
         session,
-        message: `Mounted (${this.hasWebGPU ? 'WebGPU' : 'WASM'})`,
+        message: `Mounted (WASM)`,
       });
 
-      this.prefetchNeighbors(index);
+      // No speculative 170MB downloads on mobile.
       return { session, checkpoint: ckpt, cached: false };
     } catch (err) {
       if (err.name === 'AbortError' || reqId !== this.mountRequestId) {
@@ -317,7 +325,7 @@ export class CheckpointManager {
         cached: true,
         byteLength: entry.byteLength,
         session: entry.session,
-        message: `Cached (${this.hasWebGPU ? 'WebGPU' : 'WASM'})`,
+        message: `Cached (WASM)`,
       });
       return entry.session;
     }
@@ -336,7 +344,7 @@ export class CheckpointManager {
     if (reqId !== this.mountRequestId) return null;
 
     const session = await ort.InferenceSession.create(buffer, {
-      executionProviders: this.hasWebGPU ? ['webgpu', 'wasm'] : ['wasm'],
+      executionProviders: ['wasm'],
     });
 
     this.putCache(cleanUrl, {
@@ -352,7 +360,7 @@ export class CheckpointManager {
       cached: false,
       byteLength: buffer.byteLength,
       session,
-      message: `Mounted (${this.hasWebGPU ? 'WebGPU' : 'WASM'})`,
+      message: `Mounted (WASM)`,
     });
 
     return session;
@@ -397,5 +405,17 @@ export class CheckpointManager {
 
       this.inflightBuffers.set(url, promise);
     }
+  }
+}
+/** Verify trusted manifest metadata before passing downloaded bytes to ORT. */
+export async function verifyModelBytes(buffer, checkpoint = {}) {
+  if (checkpoint.bytes && buffer.byteLength !== checkpoint.bytes) {
+    throw new Error(`Model size mismatch: expected ${checkpoint.bytes}, got ${buffer.byteLength}`);
+  }
+  if (checkpoint.sha256) {
+    if (!globalThis.crypto?.subtle) throw new Error('Secure-context SHA256 verification unavailable.');
+    const digest = await crypto.subtle.digest('SHA-256', buffer);
+    const actual = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+    if (actual !== checkpoint.sha256.toLowerCase()) throw new Error('Model SHA256 mismatch; clear browser cache and retry.');
   }
 }

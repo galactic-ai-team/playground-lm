@@ -232,9 +232,7 @@ async function detectWebGPU() {
     }
   }
   runtimeDot.classList.add('ready');
-  runtimeLabel.textContent = hasWebGPU
-    ? 'WebGPU Ready · ONNX Runtime Web'
-    : 'WASM Ready · ONNX Runtime Web';
+  runtimeLabel.textContent = 'WASM · ONNX Runtime Web 1.24.3';
 }
 
 async function initTokenizer() {
@@ -246,7 +244,12 @@ async function initTokenizer() {
 
   for (const [vUrl, mUrl] of candidates) {
     try {
-      tokenizer = await loadGPT2Tokenizer(vUrl, mUrl);
+      const candidate = await loadGPT2Tokenizer(vUrl, mUrl);
+      if (candidate.vocabSize !== 50257 || candidate.eotId !== 50256 ||
+          JSON.stringify(candidate.encode("Hello world")) !== "[15496,995]") {
+        throw new Error("Invalid GPT-2 tokenizer assets");
+      }
+      tokenizer = candidate;
       tokenizerStatus.textContent = `(GPT-2 BPE · ${tokenizer.vocabSize.toLocaleString()} tokens · EOT ${tokenizer.eotId})`;
       return;
     } catch {
@@ -254,22 +257,9 @@ async function initTokenizer() {
     }
   }
 
-  const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
-  tokenizer = {
-    vocabSize: 256,
-    eotId: GPT2_EOT_ID,
-    encode(text) {
-      const bytes = Array.from(encoder.encode(text));
-      return bytes.length ? bytes : [32];
-    },
-    decode(ids) {
-      const list = typeof ids === 'number' ? [ids] : Array.from(ids || []);
-      const bytes = list.filter((n) => n >= 0 && n <= 255);
-      return decoder.decode(new Uint8Array(bytes));
-    },
-  };
-  tokenizerStatus.textContent = '(vocab.json/merges.txt not deployed yet — UTF-8 byte fallback)';
+  tokenizer = null;
+  btnGenerate.disabled = true;
+  tokenizerStatus.textContent = '(GPT-2 tokenizer unavailable — generation disabled; reload to retry)';
 }
 
 function formatMetricCell(val, colKey = '') {
@@ -495,7 +485,7 @@ function handleCheckpointStatus(status) {
     onnxSession = session;
     runtimeDot.classList.remove('error');
     runtimeDot.classList.add('ready');
-    btnGenerate.disabled = isGenerating;
+    btnGenerate.disabled = isGenerating || !tokenizer;
     if (!isGenerating && outputStream.querySelector('.muted')) {
       outputStream.innerHTML = `<span class="muted">Checkpoint <code>${checkpoint.resolvedUrl}</code> ready (${message}). Enter a prompt or click <b>New riddle</b> to generate.</span>`;
     }
@@ -605,7 +595,7 @@ function renderManifestCheckpointsAndRiddles() {
       const quantBadge = c.quant ? ` (${c.quant.toUpperCase()})` : '';
       btn.innerHTML = `${label}Step ${c.step.toLocaleString()}${quantBadge}<br><small>${c.tokens_seen.toLocaleString()} tok</small>`;
       btn.addEventListener('click', () => {
-        checkpointManager.selectIndex(idx).catch(() => {});
+        !isGenerating && checkpointManager.selectIndex(idx).catch(() => {});
       });
       ckptStageButtons.appendChild(btn);
     });
@@ -648,7 +638,7 @@ function renderLogitBars(candidates, stepLabel) {
 
 async function runOnnxGeneration() {
   const ort = checkpointManager?.ortModule;
-  if (isGenerating || !onnxSession || !ort) return;
+  if (isGenerating || !onnxSession || !ort || !tokenizer) return;
 
   isGenerating = true;
   stopRequested = false;
@@ -669,6 +659,7 @@ async function runOnnxGeneration() {
   outputStream.appendChild(promptSpan);
 
   const inputIds = tokenizer.encode(promptText);
+  if (!inputIds.length) inputIds.push(GPT2_EOT_ID);
   const eotId = tokenizer.eotId ?? GPT2_EOT_ID;
   const stepHistory = [];
   const t0 = performance.now();
@@ -684,6 +675,7 @@ async function runOnnxGeneration() {
       const results = await onnxSession.run({ input_ids: inputTensor });
       const logitsTensor = results.logits ?? results[Object.keys(results)[0]];
       if (!logitsTensor) {
+        inputTensor.dispose?.();
         throw new Error('ONNX output did not contain a "logits" tensor.');
       }
 
@@ -703,6 +695,9 @@ async function runOnnxGeneration() {
         repetitionPenalty,
         recentTokenIds: inputIds,
       });
+
+      inputTensor.dispose?.();
+      for (const tensor of Object.values(results)) tensor.dispose?.();
 
       if (chosenId === eotId) {
         renderLogitBars(topCandidates, `step #${step + 1} (<|endoftext|> reached)`);
@@ -741,7 +736,7 @@ async function runOnnxGeneration() {
     outputStream.appendChild(errSpan);
   } finally {
     isGenerating = false;
-    btnGenerate.disabled = !onnxSession;
+    btnGenerate.disabled = !onnxSession || !tokenizer;
     btnStop.disabled = true;
   }
 }
@@ -789,7 +784,7 @@ async function handleNewRiddleClick() {
 // Event Listeners
 ckptSlider.addEventListener('input', (e) => {
   const idx = Number(e.target.value);
-  checkpointManager?.selectIndex(idx).catch(() => {});
+  !isGenerating && checkpointManager?.selectIndex(idx).catch(() => {});
 });
 
 tempSlider.addEventListener('input', (e) => (tempVal.textContent = Number(e.target.value).toFixed(2)));
@@ -812,7 +807,7 @@ btnToggleCustomOnnx.addEventListener('click', () => {
 
 btnFetchOnnx.addEventListener('click', () => {
   const url = onnxUrlInput.value.trim();
-  if (url) checkpointManager?.mountCustomUrl(url).catch(() => {});
+  if (url && !isGenerating) checkpointManager?.mountCustomUrl(url).catch(() => {});
 });
 
 btnGenerate.addEventListener('click', () => {
@@ -826,7 +821,7 @@ btnStop.addEventListener('click', () => {
 await detectWebGPU();
 checkpointManager = new CheckpointManager({
   hasWebGPU,
-  maxCachedSessions: 3,
+  maxCachedSessions: 1,
   onStatusChange: handleCheckpointStatus,
 });
 await initTokenizer();

@@ -27,14 +27,18 @@
       "tokens_seen": 3057352704,
       "label": "Stage C final",
       "quant": "q8",
-      "onnx_url": null
+      "onnx_url": "https://huggingface.co/Gteam04/playground-lm-onnx/resolve/9732b2c8318190b43b5f97c9f7299559efd46b26/step_00031101.q8.onnx",
+      "bytes": 179148599,
+      "sha256": "af7fe3f2d681e90246491e66ef7188bf95ac662af7b6f01fca0c42f855f304ec"
     },
     {
       "step": 31104,
       "tokens_seen": 3057426432,
       "label": "Stage D",
       "quant": "q8",
-      "onnx_url": null
+      "onnx_url": "https://huggingface.co/Gteam04/playground-lm-onnx/resolve/9732b2c8318190b43b5f97c9f7299559efd46b26/step_00031104.q8.onnx",
+      "bytes": 179148599,
+      "sha256": "5891e961e3b06288bda3a7334638f2242685eb2d2ad06186a1cd91b6440e7556"
     }
   ],
   "benchmarks": {
@@ -67,5 +71,11 @@
     "Riddle: I can fill an entire room without taking up any space at all. What am I? Answer:",
     "Riddle: I have four legs in the morning, two at noon, and three in the evening, or I stand still beneath your dinner plate. What am I? Answer:",
     "Riddle: Forward I am heavy, but backward I am not. What word am I? Answer:"
-  ]
+  ],
+  "model_hosting": {
+    "repo": "Gteam04/playground-lm-onnx",
+    "revision": "9732b2c8318190b43b5f97c9f7299559efd46b26",
+    "status": "published",
+    "runtime": "onnxruntime-web@1.24.3 WASM"
+  }
 }
