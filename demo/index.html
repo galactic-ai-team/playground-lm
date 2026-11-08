@@ -2,175 +2,152 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PlaygroundLM (124M) — From-Scratch Transformer Demo</title>
-  <meta name="description" content="PlaygroundLM-124M: A GPT-2-small class language model trained from scratch on FineWeb-Edu by the Galactic AI Team, running in-browser with exact GPT-2 BPE and ONNX Runtime Web." />
-  <meta name="theme-color" content="#07060d" />
-  <meta property="og:type" content="website" />
-  <meta property="og:title" content="PlaygroundLM (124M) — From-Scratch Transformer Cockpit" />
-  <meta property="og:description" content="Pretrained from scratch on FineWeb-Edu and benchmarked against OpenAI GPT-2 124M on HellaSwag, LAMBADA, and validation perplexity." />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>PlaygroundLM — Chat</title>
+  <meta name="description" content="Chat with PlaygroundLM-124M, a small language model trained from scratch by the Galactic AI Team. Runs in your browser." />
+  <meta name="theme-color" content="#0b0a12" />
+  <meta property="og:title" content="PlaygroundLM Chat" />
+  <meta property="og:description" content="A simple chat UI for PlaygroundLM-124M running on-device in your browser." />
   <meta property="og:url" content="https://playground-lm.vercel.app" />
-  <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="PlaygroundLM (124M) — Galactic AI Team" />
-  <meta name="twitter:description" content="Interactive training telemetry, exact GPT-2 BPE tokenizer, and in-browser ONNX Runtime Web inference." />
   <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-  <div class="bg-grid"></div>
-
-  <header class="topbar">
-    <div class="brand">
-      <span class="logo-orb">🛸</span>
-      <div>
-        <h1><span id="model-title">PlaygroundLM</span> <span class="badge" id="model-badge">Loading manifest...</span></h1>
-        <p class="subtitle">Galactic AI Team · From-Scratch GPT-2-Small Class Model · Exact Byte-Level BPE · Measured Checkpoints Only</p>
+  <div class="app-shell">
+    <header class="chat-topbar">
+      <div class="brand-block">
+        <div class="brand-mark" aria-hidden="true">PL</div>
+        <div>
+          <h1>PlaygroundLM</h1>
+          <p class="tagline">124M · from-scratch · runs in your browser</p>
+        </div>
       </div>
+      <div class="top-actions">
+        <button type="button" class="ghost-btn" id="btn-new-chat" title="Clear conversation">New chat</button>
+        <button type="button" class="ghost-btn" id="btn-toggle-advanced" aria-expanded="false" aria-controls="advanced-panel">Advanced</button>
+      </div>
+    </header>
+
+    <div id="model-status" class="model-status" role="status" aria-live="polite">
+      <span class="status-dot" id="runtime-dot"></span>
+      <span id="status-text">Starting…</span>
+      <span class="status-meta" id="status-meta"></span>
     </div>
-    <div class="runtime-status" id="runtime-pill">
-      <span class="dot" id="runtime-dot"></span>
-      <span id="runtime-label">Checking WebGPU / ONNX Runtime...</span>
-    </div>
-  </header>
 
-  <main class="cockpit">
-    <!-- Left Column: Checkpoint Selector + Real ONNX Inference -->
-    <section class="panel main-panel">
-      <div class="section-head">
-        <h2>1. Checkpoint Selector</h2>
-        <span class="mono-tag" id="ckpt-url-tag">manifest.json</span>
-      </div>
-      <p class="muted">Scrub across training stages to inspect token counts, validation loss on the curve, and benchmark progression. Checkpoints accept local/relative <code>.onnx</code> paths or remote URLs.</p>
+    <p class="honest-note">
+      This is a small experimental model. It generates text next-token by next-token and may not answer reliably.
+      It is not ChatGPT and is not instruction-tuned like a production assistant.
+    </p>
 
-      <div id="ckpt-empty-state" class="empty-banner hidden">
-        <strong>Models coming soon.</strong> Waiting for checkpoints in <code>demo/manifest.json</code>.
-      </div>
-
-      <div id="ckpt-coming-soon-banner" class="empty-banner hidden">
-        <strong>📦 Models coming soon (q4/q8 ONNX):</strong> Stage C pretraining finished (step 31,101) and Stage D Playground finetune finished (step 31,104). Benchmarks are live below. In-browser ONNX weights are still pending a free host (Hugging Face Hub signup blocked); scrub checkpoints and tokenize riddles now — Generate stays disabled until <code>onnx_url</code> is set.
-      </div>
-
-      <div id="ckpt-controls" class="slider-box hidden">
-        <input type="range" id="ckpt-slider" min="0" max="0" step="1" value="0" aria-label="Checkpoint Step" />
-        <div class="slider-labels" id="ckpt-stage-buttons"></div>
-      </div>
-
-      <div class="ckpt-meta">
-        <div>
-          <span class="k">Model</span>
-          <span class="v" id="meta-model">—</span>
-        </div>
-        <div>
-          <span class="k">Step</span>
-          <span class="v" id="meta-step">—</span>
-        </div>
-        <div>
-          <span class="k">Tokens Seen</span>
-          <span class="v" id="meta-tokens">—</span>
-        </div>
-        <div>
-          <span class="k">ONNX Session</span>
-          <span class="v" id="meta-session">Models coming soon</span>
+    <main id="chat-thread" class="chat-thread" aria-live="polite">
+      <div class="welcome-card" id="welcome-card">
+        <h2>Ask PlaygroundLM</h2>
+        <p>Type a question below. Your messages and the model’s replies stay in this chat.</p>
+        <div class="suggestion-row" id="suggestion-row">
+          <button type="button" class="suggestion" data-prompt="Hello">Hello</button>
+          <button type="button" class="suggestion" data-prompt="Tell me a short riddle.">Short riddle</button>
+          <button type="button" class="suggestion" data-prompt="Explain what a transformer is in one sentence.">What is a transformer?</button>
         </div>
       </div>
+    </main>
 
-      <hr class="divider" />
+    <form id="composer" class="composer" autocomplete="off">
+      <label class="sr-only" for="composer-input">Message</label>
+      <textarea id="composer-input" rows="1" placeholder="Message PlaygroundLM…" disabled></textarea>
+      <div class="composer-actions">
+        <button type="button" class="btn-stop" id="btn-stop" disabled>Stop</button>
+        <button type="submit" class="btn-send" id="btn-send" disabled>Send</button>
+      </div>
+      <p class="composer-hint">Enter to send · Shift+Enter for a new line</p>
+    </form>
 
-      <div class="section-head">
-        <h2>2. In-Browser ONNX Inference (<code>input_ids</code> → <code>logits</code>)</h2>
-        <div class="preset-row">
-          <button class="chip" id="btn-riddle" title="Pick a random riddle from manifest.json and generate">🧩 New riddle</button>
-          <button class="chip" id="btn-toggle-custom-onnx">📦 Mount Local / Custom .onnx</button>
-        </div>
+    <section id="advanced-panel" class="advanced-panel hidden" hidden>
+      <div class="advanced-head">
+        <h2>Advanced &amp; results</h2>
+        <button type="button" class="ghost-btn" id="btn-close-advanced">Close</button>
       </div>
 
-      <div id="onnx-url-bar" class="onnx-url-bar hidden">
-        <input type="text" id="onnx-url-input" placeholder="./models/step_19366_q8.onnx or https://.../checkpoint.onnx" />
-        <button class="btn-secondary" id="btn-fetch-onnx">Load ONNX</button>
-      </div>
+      <details open>
+        <summary>Checkpoint</summary>
+        <div id="ckpt-empty-state" class="empty-banner hidden">No checkpoints in manifest.</div>
+        <div id="ckpt-coming-soon-banner" class="empty-banner hidden"></div>
+        <div id="ckpt-controls" class="slider-box hidden">
+          <input type="range" id="ckpt-slider" min="0" max="0" step="1" value="0" aria-label="Checkpoint step" />
+          <div class="slider-labels" id="ckpt-stage-buttons"></div>
+        </div>
+        <div class="ckpt-meta">
+          <div><span class="k">Model</span><span class="v" id="meta-model">—</span></div>
+          <div><span class="k">Step</span><span class="v" id="meta-step">—</span></div>
+          <div><span class="k">Tokens seen</span><span class="v" id="meta-tokens">—</span></div>
+          <div><span class="k">Session</span><span class="v" id="meta-session">—</span></div>
+        </div>
+        <div id="onnx-url-bar" class="onnx-url-bar">
+          <input type="text" id="onnx-url-input" placeholder="Custom .onnx URL (optional)" />
+          <button type="button" class="btn-secondary" id="btn-fetch-onnx">Load</button>
+        </div>
+      </details>
 
-      <label class="field-label" for="prompt-input">Prompt</label>
-      <textarea id="prompt-input" rows="3" placeholder="Enter a prompt or click New riddle..."></textarea>
+      <details>
+        <summary>Sampling</summary>
+        <div class="controls-row">
+          <div class="param-control">
+            <label for="temp-slider">Temp: <b id="temp-val">0.80</b></label>
+            <input type="range" id="temp-slider" min="0.1" max="1.5" step="0.05" value="0.80" />
+          </div>
+          <div class="param-control">
+            <label for="topk-slider">Top-K: <b id="topk-val">40</b></label>
+            <input type="range" id="topk-slider" min="1" max="100" step="1" value="40" />
+          </div>
+          <div class="param-control">
+            <label for="topp-slider">Top-P: <b id="topp-val">0.92</b></label>
+            <input type="range" id="topp-slider" min="0.1" max="1.0" step="0.02" value="0.92" />
+          </div>
+          <div class="param-control">
+            <label for="reppen-slider">Rep pen: <b id="reppen-val">1.10</b></label>
+            <input type="range" id="reppen-slider" min="1.0" max="1.4" step="0.02" value="1.10" />
+          </div>
+          <div class="param-control">
+            <label for="max-tokens-slider">Max new tokens: <b id="max-tokens-val">64</b></label>
+            <input type="range" id="max-tokens-slider" min="8" max="128" step="8" value="64" />
+          </div>
+        </div>
+        <p class="muted" id="tokenizer-status">Tokenizer loading…</p>
+        <p class="muted">Speed: <span id="tok-speed">—</span></p>
+      </details>
 
-      <div class="controls-row">
-        <div class="param-control">
-          <label for="temp-slider">Temp: <b id="temp-val">0.80</b></label>
-          <input type="range" id="temp-slider" min="0.1" max="1.5" step="0.05" value="0.80" />
-        </div>
-        <div class="param-control">
-          <label for="topk-slider">Top-K: <b id="topk-val">40</b></label>
-          <input type="range" id="topk-slider" min="1" max="100" step="1" value="40" />
-        </div>
-        <div class="param-control">
-          <label for="topp-slider">Top-P: <b id="topp-val">0.92</b></label>
-          <input type="range" id="topp-slider" min="0.1" max="1.0" step="0.02" value="0.92" />
-        </div>
-        <div class="param-control">
-          <label for="reppen-slider">Rep Pen: <b id="reppen-val">1.10</b></label>
-          <input type="range" id="reppen-slider" min="1.0" max="1.4" step="0.02" value="1.10" />
-        </div>
-        <div class="param-control">
-          <label for="max-tokens-slider">Max Tokens: <b id="max-tokens-val">48</b></label>
-          <input type="range" id="max-tokens-slider" min="8" max="128" step="8" value="48" />
-        </div>
-        <div class="action-buttons">
-          <button class="btn-primary" id="btn-generate" disabled>⚡ Generate (ONNX)</button>
-          <button class="btn-secondary" id="btn-stop" disabled>⏹ Stop</button>
-        </div>
-      </div>
-
-      <div class="output-header">
-        <span>Model Output <small class="muted" id="tokenizer-status">(loading GPT-2 BPE...)</small></span>
-        <span class="tok-speed" id="tok-speed">— tok/s</span>
-      </div>
-      <div class="output-stream" id="output-stream" aria-live="polite">
-        <span class="muted">Click <b>🧩 New riddle</b> to test live GPT-2 BPE tokenization, or mount a local/hosted ONNX checkpoint to generate.</span>
-      </div>
-    </section>
-
-    <!-- Right Column: Loss Curve + Measured Logit Distribution + Benchmark Table -->
-    <aside class="side-col">
-      <section class="panel">
-        <div class="section-head">
-          <h2>📉 Training &amp; Validation Loss Curve</h2>
-          <span class="mono-tag">loss_curve.json</span>
-        </div>
-        <div id="loss-chart-container">
-          <div class="empty-banner">Loading <code>loss_curve.json</code>...</div>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="section-head">
-          <h2>🔍 Top-5 Next-Token Logits</h2>
-          <span class="mono-tag" id="inspected-token-tag">models coming soon</span>
-        </div>
-        <p class="muted">Live softmax probabilities extracted directly from the ONNX <code>logits</code> output tensor (click any generated token to inspect its step):</p>
-        <div class="logit-bars" id="logit-bars">
-          <div class="empty-banner">Models coming soon — live token probability bars activate once an ONNX checkpoint is mounted.</div>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="section-head">
-          <h2>📊 Measured Benchmark Results</h2>
-          <span class="mono-tag">benchmarks.json</span>
-        </div>
-        <p class="muted" id="bench-source-note" aria-live="polite">Loading benchmark results...</p>
-
-        <div id="bench-empty-state" class="empty-banner">
-          <strong>Not evaluated yet.</strong> Benchmark rows are currently empty.
-        </div>
-
+      <details>
+        <summary>Benchmarks &amp; loss</summary>
+        <div id="loss-chart-container"><div class="empty-banner">Loading loss curve…</div></div>
+        <p class="muted" id="bench-source-note">Loading benchmarks…</p>
+        <div id="bench-empty-state" class="empty-banner">Not evaluated yet.</div>
         <div class="table-wrap hidden" id="bench-table-wrap">
           <table class="bench-table" id="bench-table">
             <thead id="bench-thead"></thead>
             <tbody id="bench-tbody"></tbody>
           </table>
         </div>
-      </section>
-    </aside>
-  </main>
+      </details>
+
+      <details>
+        <summary>Token logits</summary>
+        <p class="muted">Top next-token probabilities from the latest generation step.</p>
+        <div class="logit-bars" id="logit-bars">
+          <div class="empty-banner">Generate a reply to inspect logits.</div>
+        </div>
+        <span class="mono-tag" id="inspected-token-tag">idle</span>
+      </details>
+    </section>
+  </div>
+
+  <!-- Compatibility aliases used by existing helper code -->
+  <span id="model-title" class="sr-only">PlaygroundLM</span>
+  <span id="model-badge" class="sr-only"></span>
+  <span id="runtime-label" class="sr-only"></span>
+  <span id="ckpt-url-tag" class="sr-only"></span>
+  <button type="button" id="btn-riddle" class="sr-only" tabindex="-1" aria-hidden="true">riddle</button>
+  <button type="button" id="btn-toggle-custom-onnx" class="sr-only" tabindex="-1" aria-hidden="true">onnx</button>
+  <button type="button" id="btn-generate" class="sr-only" tabindex="-1" aria-hidden="true">generate</button>
+  <textarea id="prompt-input" class="sr-only" tabindex="-1" aria-hidden="true"></textarea>
 
   <script type="module" src="./app.js"></script>
 </body>
