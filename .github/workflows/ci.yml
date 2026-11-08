@@ -14,3 +14,8 @@ jobs:
       - run: pip install numpy tiktoken pytest safetensors matplotlib onnx onnxruntime onnxscript && pip install torch --index-url https://download.pytorch.org/whl/cpu
       - run: pip install -e .
       - run: python -m pytest -q tests data src/playground_lm/train scripts
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: node --test demo/test_*.mjs
