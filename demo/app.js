@@ -10,6 +10,8 @@ import {
   createMessage,
   formatChatPrompt,
   trimMessagesToBudget,
+  findStopSequence,
+  normalizeCompletionText,
   setTextContent,
   appendText,
   isPinnedToBottom,
@@ -592,7 +594,7 @@ async function runChatGeneration(userText) {
   if (!inputIds.length) inputIds.push(GPT2_EOT_ID);
   const eotId = tokenizer.eotId ?? GPT2_EOT_ID;
   const stream = tokenizer.createStreamDecoder();
-  let reply = '';
+  let rawReply = '';
   const t0 = performance.now();
 
   try {
@@ -634,22 +636,30 @@ async function runChatGeneration(userText) {
       inputIds.push(chosenId);
       const piece = stream.pushToken(chosenId);
       if (piece) {
-        reply += piece;
-        appendText(assistantBubble, piece);
+        const prevDisplay = normalizeCompletionText(rawReply, { trimEnd: false });
+        rawReply += piece;
+        const stopCheck = findStopSequence(rawReply);
+        if (stopCheck.stopped) {
+          rawReply = rawReply.slice(0, stopCheck.index);
+          setTextContent(assistantBubble, stopCheck.text);
+          renderLogitBars(topCandidates, `stop · ${stopCheck.sequence.trim()} · step ${step + 1}`);
+          break;
+        }
+        const nextDisplay = stopCheck.text;
+        if (nextDisplay.startsWith(prevDisplay)) {
+          appendText(assistantBubble, nextDisplay.slice(prevDisplay.length));
+        } else {
+          setTextContent(assistantBubble, nextDisplay);
+        }
         if (stickToBottom) scrollToBottom(chatThread);
-      }
-      // Soft stop if the model starts a new user turn.
-      if (/\nUser:\s*$/.test(reply) || reply.includes('\nUser:')) {
-        reply = reply.split('\nUser:')[0].replace(/\s+$/, '');
-        setTextContent(assistantBubble, reply);
-        break;
       }
       renderLogitBars(topCandidates, `step ${step + 1}`);
       const elapsedSec = Math.max((performance.now() - t0) / 1000, 0.001);
       setTextContent(tokSpeedEl, `${((step + 1) / elapsedSec).toFixed(1)} tok/s`);
       await new Promise((r) => requestAnimationFrame(r));
     }
-    reply += stream.flush();
+    rawReply += stream.flush();
+    const reply = normalizeCompletionText(rawReply, { trimEnd: true });
     setTextContent(assistantBubble, reply || (stopRequested ? '(stopped)' : '(empty reply)'));
     chatMessages.push(createMessage('assistant', reply || ''));
   } catch (err) {
