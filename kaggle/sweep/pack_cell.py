@@ -27,7 +27,7 @@ REPLAY_DATASET_SLUGS = [
     "galacticaiteam/plm-stageb-data",
 ]
 # Mounted path for Claude online mixer (Kaggle input layout).
-DEFAULT_REPLAY_BIN = "/kaggle/input/plm-stageb-data/train.bin"
+DEFAULT_REPLAY_BIN = "/kaggle/input/datasets/galacticaiteam/plm-stageb-data/train.bin"
 
 
 def validate_slug(slug: str) -> None:

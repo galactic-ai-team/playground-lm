@@ -314,7 +314,12 @@ def clone_repo() -> None:
 
 
 def resolve_replay_bin() -> str | None:
-    """Locate FineWeb-style train.bin on Kaggle mounts (Round 3)."""
+    """Locate FineWeb-style train.bin on Kaggle mounts (Round 3).
+
+    Kaggle may mount private datasets under either
+    /kaggle/input/<slug>/ or /kaggle/input/datasets/<owner>/<slug>/.
+    Prefer Stage B / FineWeb corpus bins; never pick Stage E finetune/train.bin.
+    """
     import os
     from pathlib import Path
     env = os.environ.get("PLM_REPLAY_BIN")
@@ -325,12 +330,19 @@ def resolve_replay_bin() -> str | None:
         log(f"kaggle input mounts: {[p.name for p in sorted(root.iterdir())]}")
     prefer = ("plm-stageb-data", "plm-stage-c", "stageb", "stage-c", "fineweb")
     hits = list(root.rglob("train.bin")) if root.is_dir() else []
+    # Exclude Stage E SFT paired finetune bins from replay candidates.
+    hits = [h for h in hits if "finetune" not in str(h).lower()]
     log(f"train.bin candidates: {[str(h) for h in hits[:12]]}")
     if not hits:
-        return env
+        return None  # do not return a missing env path
     def score(p: Path) -> tuple:
         s = str(p).lower()
-        return (0 if any(k in s for k in prefer) else 1, len(s))
+        pref = 0 if any(k in s for k in prefer) else 1
+        try:
+            sz = -p.stat().st_size  # larger first
+        except OSError:
+            sz = 0
+        return (pref, sz, len(s))
     hits.sort(key=score)
     return str(hits[0])
 
