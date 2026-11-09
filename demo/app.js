@@ -318,6 +318,8 @@ export async function loadBenchmarkTable(fallbackBenchmarks = null) {
     tdLabel.textContent = String(rowName);
     if (row.validation_split === 'stage_b') {
       tdLabel.title = 'Validation loss/PPL use Stage B val.bin';
+    } else if (row.validation_split === 'stage_c_subset_r3') {
+      tdLabel.title = 'Round-3 subset eval (FineWeb max_val_batches=20; HS/LAMBADA limit=200). Not comparable to full Stage C/D FineWeb rows.';
     } else if (row.validation_split === 'stage_c') {
       tdLabel.title = 'Validation loss/PPL use Stage C val.bin';
     }
