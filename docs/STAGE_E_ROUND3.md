@@ -1,7 +1,23 @@
 # Stage E — Round 3 status (truthful)
 
-**Updated:** Mon Nov 9, 2026 ~9:33 AM EST  
-**Authority:** Stephon approved Round 3 (“Yup”, 7:07 AM ET). Goal: FineWeb-Edu-style replay mix so FineWeb val rise ≤0.02 vs C31101. **No merge. No live deploy. No promotion. No private suite. Free compute only.**
+**Updated:** Mon Nov 9, 2026 ~9:55 AM EST  
+**Authority:** Stephon approved promotion 9:35 AM ET Nov 9 — swap live Stage D 31104 for `r3-rr50-ep1-lr1e5` (50% replay, lr 1e-5). **D31104 retained for rollback.**
+
+## Promotion (live)
+
+| Item | Value |
+|------|-------|
+| Live demo | https://playground-lm.vercel.app |
+| Live step | **31140** (Stage E Round 3) |
+| Weights SHA | `ce1fa2098236656d149437638601dfafa7744ab3f69ff52739be0c95199f818b` |
+| ONNX q8 SHA | `0fb5504d0e98e4eeb2032a3c450ffd2b0d996bb11c8d27912be1d79b821fdee8` |
+| HF path | `Gteam04/playground-lm-onnx` / `step_00031140.q8.onnx` @ rev `27778a045bee172529170330ada959131037da64` |
+| GH release | https://github.com/galactic-ai-team/playground-lm/releases/tag/stage-e-r3-step31140 |
+| Runtime | ORT-Web 1.24.3 WASM |
+| Rollback | One-line: restore D31104 `onnx_url` `…/resolve/9732b2c8318190b43b5f97c9f7299559efd46b26/step_00031104.q8.onnx` (file still on HF) |
+
+CPU ONNX parity: 2110 positions, top1≈0.935, KL≈0.0045, **6/6** greedy exact vs PyTorch. Browser verification by owner after deploy.
+
 
 ## Code / PR
 
@@ -55,7 +71,7 @@ Same knobs as Round 2: `max_val_batches=20`, `benchmark_limit=200`, seed `202611
 
 Tolerances: FineWeb rise ≤0.02; HS drop ≤0.01; LAMBADA drop ≤0.015.  
 **Best FineWeb Δ:** r3-rr50-ep1-lr1e5 (+0.0072). **Best masked SFT:** r3-rr50-ep1-lr3e5 (2.8306).  
-**Chosen for promote: none** — all PASS gate but **Stephon must choose**; no auto-promote.
+**Chosen for promote:** `r3-rr50-ep1-lr1e5` (Stephon 9:35 AM ET Nov 9).
 
 Receipts: `/workspace/plm_stageE/regression_round3/` (+ `COMPARISON.md`, FREEZE.json under each passer).
 
@@ -81,6 +97,6 @@ Receipts: `/workspace/plm_stageE/regression_round3/` (+ `COMPARISON.md`, FREEZE.
 
 ## Blockers / next
 
-1. Stephon chooses among three PASS candidates (or requests more epochs) before any promote.
-2. Draft PR #100 stays unmerged.
-3. Fresh private suite still needed after freeze choice.
+1. Owner browser check on https://playground-lm.vercel.app (ORT MatMulNBits, CORS, chat).
+2. Keep D31104 HF files forever for one-line rollback.
+3. Private suite remains owner-only under `/workspace/plm_stageE/private_eval_r3/` (not in git).

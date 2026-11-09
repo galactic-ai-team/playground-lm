@@ -39,6 +39,15 @@
       "onnx_url": "https://huggingface.co/Gteam04/playground-lm-onnx/resolve/9732b2c8318190b43b5f97c9f7299559efd46b26/step_00031104.q8.onnx",
       "bytes": 179148599,
       "sha256": "5891e961e3b06288bda3a7334638f2242685eb2d2ad06186a1cd91b6440e7556"
+    },
+    {
+      "step": 31140,
+      "tokens_seen": 3058311168,
+      "label": "Stage E",
+      "quant": "q8",
+      "onnx_url": "https://huggingface.co/Gteam04/playground-lm-onnx/resolve/27778a045bee172529170330ada959131037da64/step_00031140.q8.onnx",
+      "bytes": 179148599,
+      "sha256": "0fb5504d0e98e4eeb2032a3c450ffd2b0d996bb11c8d27912be1d79b821fdee8"
     }
   ],
   "benchmarks": {
@@ -74,8 +83,14 @@
   ],
   "model_hosting": {
     "repo": "Gteam04/playground-lm-onnx",
-    "revision": "9732b2c8318190b43b5f97c9f7299559efd46b26",
+    "revision": "27778a045bee172529170330ada959131037da64",
     "status": "published",
-    "runtime": "onnxruntime-web@1.24.3 WASM"
+    "runtime": "onnxruntime-web@1.24.3 WASM",
+    "live_step": 31140,
+    "rollback": {
+      "step": 31104,
+      "onnx_url": "https://huggingface.co/Gteam04/playground-lm-onnx/resolve/9732b2c8318190b43b5f97c9f7299559efd46b26/step_00031104.q8.onnx",
+      "note": "One-line revert: set live checkpoint onnx_url (and/or remove Stage E entry so last=D) back to D31104 URL above; D files remain on HF."
+    }
   }
 }

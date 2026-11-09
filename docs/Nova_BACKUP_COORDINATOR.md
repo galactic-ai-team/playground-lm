@@ -44,3 +44,10 @@ Use **prompts-only** behavior file if needed for contamination awareness; do **n
 ## Send boundaries
 
 No passwords/tokens. No org-admin asks. No training launch. No model promotion without Stephon.
+
+## Stage E Round 3 — PROMOTED (2026-11-09 ~9:55 AM EST)
+
+Live demo now Stage E **31140** (`r3-rr50-ep1-lr1e5`). HF `step_00031140.q8.onnx` @ `27778a04…`. Release `stage-e-r3-step31140`.
+**Rollback:** restore D31104 resolve URL in `demo/manifest.json` (D files untouched on HF).
+Details: `docs/STAGE_E_ROUND3.md`.
+

@@ -37,3 +37,15 @@ All `PlaygroundLM` metrics below are marked **TBD** until the Kaggle pretraining
 ## Intended Use & Limitations
 - **Intended Use:** Research and educational inspection of from-scratch language model pretraining, domain adaptation on multi-agent dialogue, and client-side WebGPU/WASM inference via ONNX Runtime Web.
 - **Limitations:** As a compact ~124M parameter model trained on a compute budget, `PlaygroundLM` is not suited for factual retrieval, safety-critical reasoning, or production deployment without downstream guardrails.
+
+## Stage E Round 3 (live demo — step 31,140)
+
+Promoted 2026-11-09 (Stephon): `r3-rr50-ep1-lr1e5` — 50% FineWeb-Edu Stage B replay + Playground SFT, lr 1e-5, seed Stage C 31,101.
+Weights SHA256 `ce1fa2098236656d149437638601dfafa7744ab3f69ff52739be0c95199f818b`.
+ONNX q8 on Hugging Face `Gteam04/playground-lm-onnx` (`step_00031140.q8.onnx`); Stage D `step_00031104.q8.onnx` kept for rollback.
+
+**Honest subset metrics (Round-3 regression knobs):** FineWeb val 3.059 vs C 3.052 (Δ+0.007); HellaSwag 39.0%; LAMBADA 26.0% (200-item). Private exact 1/60 vs C/D 0/60 — not promotion evidence.
+
+**Rollback:** point demo `manifest.json` live URL back to D31104:
+`https://huggingface.co/Gteam04/playground-lm-onnx/resolve/9732b2c8318190b43b5f97c9f7299559efd46b26/step_00031104.q8.onnx`
+
