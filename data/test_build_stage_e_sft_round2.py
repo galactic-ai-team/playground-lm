@@ -116,13 +116,40 @@ def test_identity_gate_rejects_human_persona():
 
 
 def test_arithmetic_answers_are_exact():
+    """Answers must be exact ints; Round-2 diversified phrasing is allowed."""
+    patterns = [
+        (re.compile(r"What is (\d+) \+ (\d+)\?"), lambda a, b: a + b),
+        (re.compile(r"What is (\d+) - (\d+)\?"), lambda a, b: a - b),
+        (re.compile(r"What is (\d+) \* (\d+)\?"), lambda a, b: a * b),
+        (re.compile(r"Compute (\d+) plus (\d+)\."), lambda a, b: a + b),
+        (re.compile(r"Compute (\d+) minus (\d+)\."), lambda a, b: a - b),
+        (re.compile(r"Compute (\d+) times (\d+)\."), lambda a, b: a * b),
+        (re.compile(r"Add (\d+) and (\d+)\."), lambda a, b: a + b),
+        (re.compile(r"Subtract (\d+) from (\d+)\."), lambda a, b: b - a),
+        (re.compile(r"Multiply (\d+) by (\d+)\."), lambda a, b: a * b),
+        (re.compile(r"(\d+) \+ (\d+) = \?"), lambda a, b: a + b),
+        (re.compile(r"(\d+) - (\d+) = \?"), lambda a, b: a - b),
+        (re.compile(r"(\d+) × (\d+) = \?"), lambda a, b: a * b),
+        (re.compile(r"Find the sum of (\d+) and (\d+)\."), lambda a, b: a + b),
+        (re.compile(r"Find the difference (\d+) − (\d+)\."), lambda a, b: a - b),
+        (re.compile(r"Find the product of (\d+) and (\d+)\."), lambda a, b: a * b),
+    ]
+    seen = set()
     for row in gen_arithmetic(200, 11):
-        m = re.fullmatch(r"What is (\d+) ([+\-*]) (\d+)\?", row["user"])
-        assert m, row["user"]
-        a, op, b = int(m.group(1)), m.group(2), int(m.group(3))
-        expected = {"+":
-                    a + b, "-": a - b, "*": a * b}[op]
-        assert row["assistant"] == str(expected)
+        user = row["user"]
+        matched = False
+        for pat, fn in patterns:
+            m = pat.fullmatch(user)
+            if not m:
+                continue
+            a, b = int(m.group(1)), int(m.group(2))
+            assert row["assistant"] == str(fn(a, b)), (user, row["assistant"])
+            seen.add(row["assistant"])
+            matched = True
+            break
+        assert matched, user
+    # Unique answers so group-by-template val buckets survive collision drop.
+    assert len(seen) == 200
 
 
 def test_gsm8k_verification_is_exact():
