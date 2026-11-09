@@ -1,6 +1,6 @@
 # Stage E — Round 3 status (truthful)
 
-**Updated:** Mon Nov 9, 2026 ~9:11 AM EST  
+**Updated:** Mon Nov 9, 2026 ~9:33 AM EST  
 **Authority:** Stephon approved Round 3 (“Yup”, 7:07 AM ET). Goal: FineWeb-Edu-style replay mix so FineWeb val rise ≤0.02 vs C31101. **No merge. No live deploy. No promotion. No private suite. Free compute only.**
 
 ## Code / PR
@@ -59,9 +59,25 @@ Tolerances: FineWeb rise ≤0.02; HS drop ≤0.01; LAMBADA drop ≤0.015.
 
 Receipts: `/workspace/plm_stageE/regression_round3/` (+ `COMPARISON.md`, FREEZE.json under each passer).
 
-## Private suite
+## Private suite (Round 3 — owner-only)
 
-**Not run.**
+**Location:** `/workspace/plm_stageE/private_eval_r3/` (chmod 700; never in git/Drive as fixtures).  
+**Frozen SHA:** prompts `e65ae055…0dd0`, expect `47f756f1…be58`. **60 cases** (instruction_format 10, reading_context 12, unseen_numeracy 14, model_identity 10, conversation_consistency 14).  
+**Self-tests:** 8 passed. **Contamination audit:** exact 0 / 13-gram 0 vs Round-3 SFT train+val, Round-1 private, HellaSwag/LAMBADA samples, FineWeb jsonl sample — **not blocking**.  
+**Protocol:** greedy, max_new 48, exact strip+casefold scorer (same class as Round 1); seed_base `202611090913` per AUTHORING.
+
+| model | exact pass / 60 | vs C improved/worsened/same | notes |
+|---|---:|---|---|
+| C31101 | 0 | — | baseline |
+| D31104 | 0 | 0/0/60 | |
+| E31128 (R1) | 0 | 0/0/60 | |
+| r3-rr25-ep1-lr1e5 | 1 | 1/0/59 | unseen_numeracy +1 |
+| r3-rr50-ep1-lr1e5 | 1 | 1/0/59 | unseen_numeracy +1 |
+| r3-rr50-ep1-lr3e5 | 1 | 1/0/59 | unseen_numeracy +1 |
+
+**Recommend (not promote):** `r3-rr50-ep1-lr1e5` — best FineWeb Δ among gate-PASS (+0.0072) with equal private exact-score to other R3 cells.  
+**Caveats:** N=60; strict exact scorer floors all models (R1 C was also 0/60 on R1 suite); private ≠ promotion evidence. Aggregate-only summary on Drive receipts; **no prompt/output upload**.
+
 
 ## Blockers / next
 

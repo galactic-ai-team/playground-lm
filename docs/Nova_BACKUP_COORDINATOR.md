@@ -21,13 +21,12 @@ Stephon (or parent browser on his say-so) pastes this brief into Nova’s Muse c
 
 ## Current Stage E snapshot (public)
 
-- Round 3 draft PR: https://github.com/galactic-ai-team/playground-lm/pull/100 (`review/stage-e-round3`). **CI green. Draft only — no merge.**
-- Replay: `galacticaiteam/plm-stageb-data` (FineWeb-Edu sample-10BT). All three sweep cells COMPLETE on Kaggle; all three **PASS** Claude FineWeb gate (≤0.02). **Not promoted.**
-- Best FineWeb Δ: r3-rr50-ep1-lr1e5 (+0.0072). Best masked SFT: r3-rr50-ep1-lr3e5 (2.8306). Await Stephon choice.
-- Status: `/workspace/plm_stageE/STAGE_E_ROUND3.md` and `docs/STAGE_E_ROUND3.md`.
-- Baseline preserved: Stage C **31101**, Stage D **31104**, live demo, public ONNX `Gteam04/playground-lm-onnx`.
-- **No promotion. No private suite. Free-only compute.**
-
+- Round 3 draft PR: https://github.com/galactic-ai-team/playground-lm/pull/100. **Draft only — no merge.**
+- Public regression: all three replay candidates **PASS** Claude FineWeb gate (≤0.02). Best FineWeb Δ: r3-rr50-ep1-lr1e5 (+0.0072).
+- Private suite (owner-only dir): 60 cases; contamination clean; strict exact scores floor-level (C/D/E 0/60; each R3 candidate 1/60). Aggregate-only on Drive. **Not promoted.**
+- Recommend for Stephon review (not auto-promote): **r3-rr50-ep1-lr1e5**.
+- Status: `docs/STAGE_E_ROUND3.md`. Baseline C31101 / D31104 / live demo preserved.
+- **No promotion. No private fixtures in git/Drive. Free-only compute.**
 
 ## Primary lane
 
