@@ -313,6 +313,28 @@ def clone_repo() -> None:
     log(f"repo at {REPO_DIR} branch={GIT_BRANCH} commit={GIT_COMMIT or '(branch tip)'}")
 
 
+def resolve_replay_bin() -> str | None:
+    """Locate FineWeb-style train.bin on Kaggle mounts (Round 3)."""
+    import os
+    from pathlib import Path
+    env = os.environ.get("PLM_REPLAY_BIN")
+    if env and Path(env).is_file():
+        return env
+    root = Path("/kaggle/input")
+    if root.is_dir():
+        log(f"kaggle input mounts: {[p.name for p in sorted(root.iterdir())]}")
+    prefer = ("plm-stageb-data", "plm-stage-c", "stageb", "stage-c", "fineweb")
+    hits = list(root.rglob("train.bin")) if root.is_dir() else []
+    log(f"train.bin candidates: {[str(h) for h in hits[:12]]}")
+    if not hits:
+        return env
+    def score(p: Path) -> tuple:
+        s = str(p).lower()
+        return (0 if any(k in s for k in prefer) else 1, len(s))
+    hits.sort(key=score)
+    return str(hits[0])
+
+
 def main() -> int:
     if not preflight_disk():
         return 1
@@ -354,6 +376,13 @@ def main() -> int:
     else:
         eval_iv = "25"
     warmup = int(os.environ["PLM_WARMUP"]) if os.environ.get("PLM_WARMUP") else max(1, min(20, span // 4))
+    replay_bin = resolve_replay_bin()
+    if os.environ.get("PLM_REPLAY_RATIO") and float(os.environ.get("PLM_REPLAY_RATIO") or 0) > 0:
+        if not replay_bin:
+            raise SystemExit("PLM_REPLAY_RATIO set but no train.bin found under /kaggle/input")
+        os.environ["PLM_REPLAY_BIN"] = replay_bin
+        env["PLM_REPLAY_BIN"] = replay_bin
+        log(f"replay bin -> {replay_bin}")
     env.update({
         "PLM_STAGE": "E",                          # fixed from "D"
         "PLM_MAX_STEPS": str(max_steps),
