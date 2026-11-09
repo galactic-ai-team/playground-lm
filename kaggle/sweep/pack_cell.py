@@ -80,47 +80,29 @@ def build_cell(
 
 
 def _inject_env_block(launcher_src: str, cell: dict) -> str:
-    """Insert Round-3 env overrides before the torchrun env block.
+    """Prepend Round-3 os.environ pins at file top (before main runs).
 
-    Bakes PLM_REPLAY_RATIO / PLM_REPLAY_BIN / PLM_LR / PLM_MAX_STEPS /
-    PLM_WARMUP / epochs / run id / git pin so cell.json cannot drift from
-    the launched script (Claude note: Dee must wire MAX_STEPS + WARMUP).
+    Must land before stage_e_train reads PLM_MAX_STEPS / PLM_REPLAY_* so the
+    schedule length and online mixer see the sweep values.
     """
     warmup = max(1, min(20, (int(cell["max_steps"]) - 31101) // 4))
     replay_bin = cell.get("replay_bin") or DEFAULT_REPLAY_BIN
-    assignments = (
-        f'env["PLM_REPLAY_RATIO"] = "{cell["replay_ratio"]}"\n'
-        f'env["PLM_REPLAY_BIN"] = "{replay_bin}"\n'
-        f'env["PLM_LR"] = "{cell["lr"]}"\n'
-        f'env["PLM_FINETUNE_EPOCHS"] = "{cell["epochs"]}"\n'
-        f'env["PLM_MAX_STEPS"] = "{cell["max_steps"]}"\n'
-        f'env["PLM_WARMUP"] = "{warmup}"\n'
-        f'env["PLM_RUN_ID"] = "{cell["run_id"]}"\n'
-        f'env["PLM_GIT_COMMIT"] = "{cell["git_commit"]}"\n'
-        'env["PLM_RESET_OPTIMIZER"] = "1"\n'
-        'env["PLM_QUOTA_GUARD"] = "1"\n'
+    block = (
+        "# --- sweep cell overrides (Round 3; Dee/Lumi) ---\n"
+        "import os as _os_sweep\n"
+        f'_os_sweep.environ["PLM_REPLAY_RATIO"] = "{cell["replay_ratio"]}"\n'
+        f'_os_sweep.environ["PLM_REPLAY_BIN"] = "{replay_bin}"\n'
+        f'_os_sweep.environ["PLM_LR"] = "{cell["lr"]}"\n'
+        f'_os_sweep.environ["PLM_FINETUNE_EPOCHS"] = "{cell["epochs"]}"\n'
+        f'_os_sweep.environ["PLM_MAX_STEPS"] = "{cell["max_steps"]}"\n'
+        f'_os_sweep.environ["PLM_WARMUP"] = "{warmup}"\n'
+        f'_os_sweep.environ["PLM_RUN_ID"] = "{cell["run_id"]}"\n'
+        f'_os_sweep.environ["PLM_GIT_COMMIT"] = "{cell["git_commit"]}"\n'
+        '_os_sweep.environ["PLM_RESET_OPTIMIZER"] = "1"\n'
+        '_os_sweep.environ["PLM_QUOTA_GUARD"] = "1"\n'
+        "# --- end sweep cell overrides ---\n\n"
     )
-    marker = "env = dict(os.environ)"
-    if marker in launcher_src:
-        return launcher_src.replace(marker, marker + "\n" + assignments, 1)
-    marker2 = "env.update({"
-    if marker2 in launcher_src:
-        inject = (
-            "    env.update({\n"
-            f'        "PLM_REPLAY_RATIO": "{cell["replay_ratio"]}",\n'
-            f'        "PLM_REPLAY_BIN": "{replay_bin}",\n'
-            f'        "PLM_LR": "{cell["lr"]}",\n'
-            f'        "PLM_FINETUNE_EPOCHS": "{cell["epochs"]}",\n'
-            f'        "PLM_MAX_STEPS": "{cell["max_steps"]}",\n'
-            f'        "PLM_WARMUP": "{warmup}",\n'
-            f'        "PLM_RUN_ID": "{cell["run_id"]}",\n'
-            f'        "PLM_GIT_COMMIT": "{cell["git_commit"]}",\n'
-        )
-        return launcher_src.replace(marker2, inject + marker2, 1)
-    raise RuntimeError(
-        "launcher template does not contain 'env = dict(os.environ)' "
-        "or 'env.update({'; cannot inject sweep env safely"
-    )
+    return block + launcher_src
 
 
 

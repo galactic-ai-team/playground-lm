@@ -117,16 +117,19 @@ def test_pack_force_does_not_delete_siblings(tmp_path):
 
 
 def test_pack_requires_template_env_marker(tmp_path):
-    bad_template = tmp_path / "bad.py"
-    bad_template.write_text("print('no env marker here')\n")
-    with pytest.raises(RuntimeError, match="cannot inject"):
-        pack_cell.package_cell(
-            bad_template, tmp_path / "cells", "plm-stage-e-train-a", "a",
-            1, 3e-5, 31102, 0.2, "abc",
-        )
+    """Round-3 inject prepends os.environ pins; any template text is accepted."""
+    template = tmp_path / "bare.py"
+    template.write_text("print('hi')\n")
+    out = tmp_path / "pack"
+    cell = pack_cell.package_cell(
+        template, out, "plm-stage-e-r3-bare", "bare",
+        1.0, 1e-5, 31140, 0.25, "abc",
+    )
+    text = (cell / "plm-stage-e-r3-bare.py").read_text()
+    assert 'PLM_REPLAY_RATIO' in text
+    assert "print('hi')" in text
 
 
-# --- run_sweep: dry-run visibility -------------------------------------
 
 def test_dry_run_lists_cells_without_pushing(tmp_path, monkeypatch):
     template = _write_template(tmp_path)
