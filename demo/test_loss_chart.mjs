@@ -22,8 +22,8 @@ test('renderLossChart overlays Stage-C milestone step markers without fabricatin
 
   renderLossChart(container, sampleData, { activeStep: 19366 });
 
-  assert.equal(DEFAULT_STAGE_C_MILESTONES.length, 5);
-  for (const step of [2035, 10907, 19366, 31101, 31104]) {
+  assert.equal(DEFAULT_STAGE_C_MILESTONES.length, 6);
+  for (const step of [2035, 10907, 19366, 31101, 31104, 31140]) {
     assert.match(container.innerHTML, new RegExp(`data-milestone-step="${step}"`));
   }
   assert.match(container.innerHTML, /s1 start \(2,035\)/);
@@ -31,10 +31,11 @@ test('renderLossChart overlays Stage-C milestone step markers without fabricatin
   assert.match(container.innerHTML, /s2 end \(19,366\)/);
   assert.match(container.innerHTML, /s3 end \(31,101\)/);
   assert.match(container.innerHTML, /Stage D \(31,104\)/);
+  assert.match(container.innerHTML, /Stage E \(31,140\)/);
   assert.doesNotMatch(container.innerHTML, /s3 target/);
   assert.match(container.innerHTML, /stroke="rgba\(124, 247, 212, 0\.7\)"[^>]*stroke-dasharray="4,2"/);
 
-  // Only the 3 real val_loss points in sampleData should render as circles (none for 31101 / 31104)
+  // Only the 3 real val_loss points in sampleData should render as circles (none for 31101 / 31104 / 31140)
   const circleCount = (container.innerHTML.match(/<circle /g) || []).length;
   assert.equal(circleCount, 3);
 });

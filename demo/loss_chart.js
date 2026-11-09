@@ -7,7 +7,7 @@
  *   }
  *
  * Includes Stage-C session boundary milestone markers (2035 / 10907 / 19366 / 31101 end)
- * plus the Stage D Playground SFT marker (31104)
+ * plus Stage D (31104) and Stage E Round 3 (31140) markers
  * rendered strictly as step-axis vertical reference lines with no fabricated loss points.
  */
 
