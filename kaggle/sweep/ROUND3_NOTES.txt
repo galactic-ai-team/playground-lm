@@ -1,0 +1,46 @@
+
+## 6. Dry-run the orchestrator
+
+Expected: one `pending` line per cell with lr/ep/replay/commit, exit 0,
+zero `kaggle kernels push` calls.
+
+## 7. Execute (only after push-to-run)
+
+Concurrency: **max 2 concurrent GPU sessions** on the free tier. Cells beyond
+that are marked `queued-concurrency` and must be pushed in a follow-up
+invocation after an earlier cell finishes.
+
+## 8. GPU-hours estimate
+
+- Cells: `lr × epochs × replay = 2 × 2 × 2 = 8`.
+- Each cell: `max_steps=31228`, resume from 31101 → ~127 updates.
+- Per-cell wall time on 2×T4 at ~4.4 s/step: **~9.3 minutes**.
+- Per-cell GPU-hours (2×T4 bills 1× wall per Kaggle quota rules): **~0.16 h**.
+- **Full sweep: ~1.3 GPU-hours**, well within the 30 h/week quota, and fits
+  easily inside the "2 concurrent, queue the rest" cap.
+
+## 9. Durable outputs
+
+- Kaggle kernel output is the origin. Local freeze is derived.
+- Per-cell artifacts kept: `final.safetensors`, `model_config.json`,
+  `metrics.jsonl`, `run.log`. **Do not** upload full optimizer state — the
+  packet requires no optimizer-state dependency in the receipt.
+- `COMPLETE.json` in `runs/<run_id>/` is a **local skip marker** written by
+  the operator after verifying the cell, not a Kaggle API field.
+- Never `rm -rf` a run directory. If a cell is abandoned, rename to
+  `<run_id>.abandoned-<timestamp>`.
+
+## 10. Recovery authority
+
+Same pattern as `candidate_ep1_frozen/meta/RECEIPT_AUTHORITY.md`:
+Kaggle kernel version N is the origin. If local bytes drift, re-download
+from Kaggle and re-verify with `tools/verify_freeze_receipt.py`.
+
+## 11. Standing rules
+
+- Free Kaggle GPU only (T4). No paid resources.
+- Preserve `C31101` seed; never overwrite with a sweep result.
+- Do not touch `D31104` live production weights.
+- No promotion, no merge, no public weight upload.
+- No private eval content in this document.
+- No local multi-GB downloads (box is ~98% full).

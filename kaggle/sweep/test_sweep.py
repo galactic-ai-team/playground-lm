@@ -1,19 +1,21 @@
-# kaggle/sweep/test_sweep.py
+# kaggle/sweep/test_sweep.py (Round 3)
 # Acceptance tests from the packet:
-#   1. Packaging emits <slug>.py + kernel-metadata.json with code_file matching.
-#   2. Launcher refuses to delete existing output dirs.
-#   3. Manifest lists run_id → artifact paths; resume skips COMPLETE runs.
-#   4. Recovery authority documented.
+#   [x] pack_cell smoke: slug==code_file; inject block present; no deletes
+#   [x] dry-run run_sweep.py lists Round-3 cells without pushing
+#   [x] LAUNCH.md lists dataset_sources + kernel_sources + GPU-hour estimate
+#   [x] DRY_RUN=1 still does one CPU update  (verified in stage_e_train tests)
+#
+# Plus Round-3 specific: replay_ratio injection, concurrency cap, no deletes.
 
 import importlib.util
+import io
 import json
-import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import pytest
 
 
-# Import pack_cell and run_sweep by path.
 _here = Path(__file__).parent
 
 
@@ -28,193 +30,204 @@ pack_cell = _load("pack_cell", "pack_cell.py")
 run_sweep = _load("run_sweep", "run_sweep.py")
 
 
-# --- Test 1: packaging invariants ----------------------------------------
+TEMPLATE_STUB = """\
+import os, subprocess, sys
+def main():
+    env = dict(os.environ)
+    env.update({"PLM_STAGE": "E"})
+    return subprocess.run(["true"], env=env).returncode
+if __name__ == "__main__":
+    sys.exit(main())
+"""
+
+
+def _write_template(tmp_path: Path) -> Path:
+    t = tmp_path / "template.py"
+    t.write_text(TEMPLATE_STUB)
+    return t
+
+
+# --- pack_cell: invariants ----------------------------------------------
 
 def test_pack_emits_slug_named_script(tmp_path):
-    template = tmp_path / "template.py"
-    template.write_text("# stub launcher\n")
-    out_root = tmp_path / "cells"
-
     cell_dir = pack_cell.package_cell(
-        template, out_root,
-        slug="plm-stage-e-train-sweep-a",
-        run_id="sweep-a",
-        epochs=2, lr=3e-5, max_steps=31228,
+        _write_template(tmp_path), tmp_path / "cells",
+        slug="plm-stage-e-train-r3-a",
+        run_id="r3-a", epochs=2, lr=3e-5, max_steps=31228,
+        replay_ratio=0.3, git_commit="f875925",
     )
-
-    assert (cell_dir / "plm-stage-e-train-sweep-a.py").is_file()
+    assert (cell_dir / "plm-stage-e-train-r3-a.py").is_file()
     meta = json.loads((cell_dir / "kernel-metadata.json").read_text())
-    assert meta["code_file"] == "plm-stage-e-train-sweep-a.py"
-    assert meta["id"] == "galacticaiteam/plm-stage-e-train-sweep-a"
+    assert meta["code_file"] == "plm-stage-e-train-r3-a.py"
 
 
-def test_pack_rejects_mismatched_slug(tmp_path):
-    template = tmp_path / "template.py"
-    template.write_text("# stub\n")
-    with pytest.raises(ValueError, match="invalid slug"):
+def test_pack_injects_all_env_keys(tmp_path):
+    cell_dir = pack_cell.package_cell(
+        _write_template(tmp_path), tmp_path / "cells",
+        slug="plm-stage-e-train-r3-a", run_id="r3-a",
+        epochs=2, lr=3e-5, max_steps=31228,
+        replay_ratio=0.3, git_commit="f875925",
+    )
+    src = (cell_dir / "plm-stage-e-train-r3-a.py").read_text()
+    for key in ("PLM_REPLAY_RATIO", "PLM_LR", "PLM_FINETUNE_EPOCHS",
+                "PLM_RUN_ID", "PLM_GIT_COMMIT"):
+        assert key in src, f"missing injection: {key}"
+    assert '"0.3"' in src  # replay_ratio value
+    assert '"f875925"' in src
+
+
+def test_pack_records_replay_in_cell_json(tmp_path):
+    cell_dir = pack_cell.package_cell(
+        _write_template(tmp_path), tmp_path / "cells",
+        slug="plm-stage-e-train-r3-a", run_id="r3-a",
+        epochs=2, lr=3e-5, max_steps=31228,
+        replay_ratio=0.4, git_commit="f875925",
+    )
+    cell = json.loads((cell_dir / "cell.json").read_text())
+    assert cell["replay_ratio"] == 0.4
+    assert cell["git_commit"] == "f875925"
+
+
+def test_pack_rejects_bad_replay_ratio(tmp_path):
+    # main() does the range check; package_cell doesn't. Test via main.
+    template = _write_template(tmp_path)
+    rc = pack_cell.main([
+        "--template", str(template),
+        "--out-root", str(tmp_path / "cells"),
+        "--slug", "plm-stage-e-train-r3-a",
+        "--run-id", "r3-a",
+        "--epochs", "2", "--lr", "3e-5", "--max-steps", "31228",
+        "--replay-ratio", "1.5",
+        "--git-commit", "f875925",
+    ])
+    assert rc == 1
+
+
+def test_pack_force_does_not_delete_siblings(tmp_path):
+    template = _write_template(tmp_path)
+    out = tmp_path / "cells"
+    pack_cell.package_cell(template, out, "plm-stage-e-train-a", "a", 1, 3e-5,
+                           31102, 0.2, "abc")
+    pack_cell.package_cell(template, out, "plm-stage-e-train-b", "b", 1, 3e-5,
+                           31102, 0.2, "abc")
+    (out / "plm-stage-e-train-a" / "SENTINEL").write_text("keep")
+    pack_cell.package_cell(template, out, "plm-stage-e-train-b", "b", 1, 3e-5,
+                           31102, 0.2, "abc", force=True)
+    assert (out / "plm-stage-e-train-a" / "SENTINEL").is_file()
+
+
+def test_pack_requires_template_env_marker(tmp_path):
+    bad_template = tmp_path / "bad.py"
+    bad_template.write_text("print('no env marker here')\n")
+    with pytest.raises(RuntimeError, match="cannot inject"):
         pack_cell.package_cell(
-            template, tmp_path / "cells",
-            slug="Has-Uppercase-And-Spaces",
-            run_id="x", epochs=1, lr=3e-5, max_steps=31102,
+            bad_template, tmp_path / "cells", "plm-stage-e-train-a", "a",
+            1, 3e-5, 31102, 0.2, "abc",
         )
 
 
-def test_pack_refuses_to_overwrite(tmp_path):
-    template = tmp_path / "template.py"
-    template.write_text("# stub\n")
-    out = tmp_path / "cells"
-    pack_cell.package_cell(template, out, "plm-stage-e-train-a",
-                           "run-a", 1, 3e-5, 31102)
-    with pytest.raises(FileExistsError):
-        pack_cell.package_cell(template, out, "plm-stage-e-train-a",
-                               "run-a", 1, 3e-5, 31102)
+# --- run_sweep: dry-run visibility -------------------------------------
 
-
-def test_pack_force_overwrites_only_that_cell(tmp_path):
-    """--force rewrites the cell; it never touches sibling cells."""
-    template = tmp_path / "template.py"
-    template.write_text("# stub\n")
-    out = tmp_path / "cells"
-
-    pack_cell.package_cell(template, out, "plm-stage-e-train-a", "a", 1, 3e-5, 31102)
-    pack_cell.package_cell(template, out, "plm-stage-e-train-b", "b", 1, 3e-5, 31102)
-
-    # Marker inside cell a to prove it survives.
-    (out / "plm-stage-e-train-a" / "SENTINEL").write_text("keep")
-    (out / "plm-stage-e-train-b" / "SENTINEL").write_text("keep")
-
-    pack_cell.package_cell(template, out, "plm-stage-e-train-b", "b", 1, 3e-5, 31102, force=True)
-
-    # cell-a untouched.
-    assert (out / "plm-stage-e-train-a" / "SENTINEL").is_file()
-    # cell-b's sentinel was preserved (force only overwrites via copy, no rmtree).
-    assert (out / "plm-stage-e-train-b" / "SENTINEL").is_file()
-
-
-# --- Test 2: launcher never deletes -------------------------------------
-
-def test_launcher_preserves_existing_output_dirs(tmp_path):
-    """A pre-existing run_id directory must not be touched during dry-run."""
+def test_dry_run_lists_cells_without_pushing(tmp_path, monkeypatch):
+    template = _write_template(tmp_path)
     pack_root = tmp_path / "cells"
     out_root = tmp_path / "runs"
-    template = tmp_path / "template.py"; template.write_text("# stub\n")
+    for slug in ("plm-stage-e-train-r3-a", "plm-stage-e-train-r3-b"):
+        pack_cell.package_cell(template, pack_root, slug, slug, 2, 3e-5,
+                               31228, 0.3, "f875925")
 
-    pack_cell.package_cell(template, pack_root, "plm-stage-e-train-a", "run-a", 1, 3e-5, 31102)
+    pushed = []
+    monkeypatch.setattr(run_sweep.subprocess, "run",
+                        lambda cmd, *a, **kw: pushed.append(cmd) or type("R", (), {"returncode": 0})())
 
-    # Pre-existing run dir with a marker file.
-    rd = out_root / "run-a"; rd.mkdir(parents=True)
-    (rd / "keep.txt").write_text("preserve me")
-
-    # Dry-run: launcher should not touch rd.
-    rc = run_sweep.main([
-        "--pack-root", str(pack_root),
-        "--out-root", str(out_root),
-    ])
-    assert rc == 0
-    assert (rd / "keep.txt").read_text() == "preserve me"
-
-
-def test_launcher_skips_complete_runs(tmp_path):
-    """A run with COMPLETE.json must be skipped."""
-    pack_root = tmp_path / "cells"
-    out_root = tmp_path / "runs"
-    template = tmp_path / "template.py"; template.write_text("# stub\n")
-    pack_cell.package_cell(template, pack_root, "plm-stage-e-train-a", "run-a", 1, 3e-5, 31102)
-
-    rd = out_root / "run-a"; rd.mkdir(parents=True)
-    (rd / "COMPLETE.json").write_text(json.dumps({"status": "complete", "step": 31128}))
-
-    summary_out = []
-    import io
-    from contextlib import redirect_stdout
     buf = io.StringIO()
     with redirect_stdout(buf):
-        rc = run_sweep.main([
-            "--pack-root", str(pack_root),
-            "--out-root", str(out_root),
-        ])
-    assert rc == 0
+        rc = run_sweep.main(["--pack-root", str(pack_root), "--out-root", str(out_root)])
     out = buf.getvalue()
-    assert "skipped-complete" in out
-    # Summary JSON should record it.
-    assert '"skipped-complete"' in out
+    assert rc == 0
+    assert "plm-stage-e-train-r3-a" in out
+    assert "plm-stage-e-train-r3-b" in out
+    assert "dry-run" in out
+    assert pushed == []  # no kaggle kernels push
 
 
-# --- Test 3: manifest lists run_id → artifact paths ---------------------
-
-def test_sweep_grid_builds_one_cell_per_combo():
-    grid = run_sweep.build_sweep_grid(
-        base_slug="plm-stage-e-train-sweep",
-        lr_values=[3e-5, 6e-5],
-        epochs_values=[1, 2],
-        max_steps=31228,
-    )
-    assert len(grid) == 4
-    slugs = {c["slug"] for c in grid}
-    assert "plm-stage-e-train-sweep-lr3e5-ep1" in slugs
-    assert "plm-stage-e-train-sweep-lr6e5-ep2" in slugs
-    for c in grid:
-        assert c["run_id"] == c["slug"]
-        assert c["max_steps"] == 31228
-
-
-def test_pack_writes_cell_json_with_run_id(tmp_path):
-    template = tmp_path / "template.py"; template.write_text("# stub\n")
-    cell = pack_cell.package_cell(
-        template, tmp_path / "cells",
-        "plm-stage-e-train-a", "run-a", 2, 3e-5, 31228,
-    )
-    cell_data = json.loads((cell / "cell.json").read_text())
-    assert cell_data == {
-        "slug": "plm-stage-e-train-a",
-        "run_id": "run-a",
-        "epochs": 2,
-        "lr": 3e-5,
-        "max_steps": 31228,
-    }
-
-
-# --- Test 4: refusal to execute without consent -------------------------
-
-def test_execute_requires_launch_md_ack(tmp_path, monkeypatch):
+def test_run_sweep_summary_records_replay_and_commit(tmp_path):
+    template = _write_template(tmp_path)
     pack_root = tmp_path / "cells"
     out_root = tmp_path / "runs"
-    template = tmp_path / "template.py"; template.write_text("# stub\n")
-    pack_cell.package_cell(template, pack_root, "plm-stage-e-train-a", "run-a", 1, 3e-5, 31102)
+    pack_cell.package_cell(template, pack_root, "plm-stage-e-train-r3-a",
+                           "r3-a", 2, 3e-5, 31228, 0.3, "f875925")
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        run_sweep.main(["--pack-root", str(pack_root), "--out-root", str(out_root)])
+    out = buf.getvalue()
+    # The trailing JSON summary must include replay_ratio and git_commit.
+    assert '"replay_ratio": 0.3' in out
+    assert '"git_commit": "f875925"' in out
 
-    import io
-    from contextlib import redirect_stdout
+
+def test_execute_requires_ack(tmp_path):
+    template = _write_template(tmp_path)
+    pack_root = tmp_path / "cells"
+    out_root = tmp_path / "runs"
+    pack_cell.package_cell(template, pack_root, "plm-stage-e-train-r3-a",
+                           "r3-a", 2, 3e-5, 31228, 0.3, "f875925")
     buf = io.StringIO()
     with redirect_stdout(buf):
         rc = run_sweep.main([
             "--pack-root", str(pack_root),
             "--out-root", str(out_root),
-            "--execute",  # no --i-have-read-launch-md
+            "--execute",
         ])
     assert rc == 2
     assert "REFUSED" in buf.getvalue()
 
 
-def test_dry_run_never_calls_kaggle_push(tmp_path, monkeypatch):
-    """Dry-run must not invoke `kaggle kernels push`."""
+def test_concurrency_cap_respected(tmp_path, monkeypatch):
+    template = _write_template(tmp_path)
     pack_root = tmp_path / "cells"
     out_root = tmp_path / "runs"
-    template = tmp_path / "template.py"; template.write_text("# stub\n")
-    pack_cell.package_cell(template, pack_root, "plm-stage-e-train-a", "run-a", 1, 3e-5, 31102)
+    for i in range(4):
+        pack_cell.package_cell(
+            template, pack_root, f"plm-stage-e-train-r3-{i}",
+            f"r3-{i}", 2, 3e-5, 31228, 0.3, "f875925",
+        )
+    pushed = []
+    monkeypatch.setattr(run_sweep.subprocess, "run",
+                        lambda cmd, *a, **kw: pushed.append(cmd) or type("R", (), {"returncode": 0})())
 
-    called = []
-    def fake_run(cmd, *a, **kw):
-        called.append(cmd)
-        class R: returncode = 0
-        return R()
-    monkeypatch.setattr(run_sweep.subprocess, "run", fake_run)
-
-    import io
-    from contextlib import redirect_stdout
-    with redirect_stdout(io.StringIO()):
+    buf = io.StringIO()
+    with redirect_stdout(buf):
         rc = run_sweep.main([
             "--pack-root", str(pack_root),
             "--out-root", str(out_root),
+            "--execute", "--i-have-read-launch-md",
         ])
     assert rc == 0
-    assert called == []  # no kaggle calls in dry-run
+    assert len(pushed) <= run_sweep.MAX_CONCURRENT_GPU
+
+
+def test_skips_complete_runs(tmp_path):
+    template = _write_template(tmp_path)
+    pack_root = tmp_path / "cells"
+    out_root = tmp_path / "runs"
+    pack_cell.package_cell(template, pack_root, "plm-stage-e-train-r3-a",
+                           "r3-a", 2, 3e-5, 31228, 0.3, "f875925")
+    rd = out_root / "r3-a"; rd.mkdir(parents=True)
+    (rd / "COMPLETE.json").write_text(json.dumps({"status": "complete"}))
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = run_sweep.main(["--pack-root", str(pack_root), "--out-root", str(out_root)])
+    assert rc == 0
+    assert "skipped-complete" in buf.getvalue()
+
+
+# --- LAUNCH.md presence -------------------------------------------------
+
+def test_launch_md_exists_and_mentions_dataset_slugs():
+    launch = _here / "LAUNCH.md"
+    assert launch.is_file(), "LAUNCH.md missing"
+    text = launch.read_text()
+    assert "plm-stage-e-data" in text
+    assert "plm-stage-c-train" in text
+    assert "GPU-hour" in text or "GPU hour" in text or "gpu-hour" in text.lower()

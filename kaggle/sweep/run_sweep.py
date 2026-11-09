@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
-# kaggle/sweep/run_sweep.py
-# Multi-run free-GPU sweep launcher.
+# kaggle/sweep/run_sweep.py (Round 3)
+# Multi-run free-GPU sweep launcher. Dry-run only by default.
 #
-# DRY-RUN ONLY by default. With --execute, it would run `kaggle kernels push`
-# for each cell — but the guard below refuses unless the caller explicitly
-# sets --execute AND --i-have-read-launch-md. This is intentional friction:
-# the sweep must not start until Stephon/Lumi says push-to-run.
-#
-# Durable outputs: each run_id writes to /workspace/plm_stageE/runs/<run_id>/.
-# Existing run directories are preserved — a COMPLETE run is skipped, an
-# incomplete run is left for the operator to inspect. The launcher never
-# rm -rf's anything.
+# Round-3 deltas vs Round 2:
+#   - Concurrency limit: at most 2 concurrent Kaggle GPU sessions
+#     (free tier constraint). Cells beyond the limit are queued.
+#   - Reports replay_ratio and commit per cell in the summary.
+#   - COMPLETE.json is a local skip marker only, not a Kaggle contract.
 
 import argparse
 import json
@@ -20,6 +16,7 @@ from pathlib import Path
 
 
 COMPLETE_MARKER = "COMPLETE.json"
+MAX_CONCURRENT_GPU = 2
 
 
 def log(msg: str) -> None:
@@ -37,12 +34,7 @@ def is_complete(run_dir: Path) -> bool:
     return m.get("status") == "complete"
 
 
-def run_dir_for(out_root: Path, run_id: str) -> Path:
-    return out_root / run_id
-
-
 def push_cell(cell_dir: Path) -> int:
-    """Push a single kernel. Returns the Kaggle CLI exit code."""
     cmd = ["kaggle", "kernels", "push", "-p", str(cell_dir)]
     log(f"$ {' '.join(cmd)}")
     return subprocess.run(cmd).returncode
@@ -52,49 +44,45 @@ def build_sweep_grid(
     base_slug: str,
     lr_values: list[float],
     epochs_values: list[float],
+    replay_values: list[float],
     max_steps: int,
 ) -> list[dict]:
-    """Cartesian product of LR × epochs, one cell per (lr, epochs)."""
     cells = []
     for lr in lr_values:
         for ep in epochs_values:
-            slug = f"{base_slug}-lr{_fmt_sci(lr)}-ep{_fmt_num(ep)}"
-            run_id = f"{base_slug}-lr{_fmt_sci(lr)}-ep{_fmt_num(ep)}"
-            cells.append({
-                "slug": slug,
-                "run_id": run_id,
-                "lr": lr,
-                "epochs": ep,
-                "max_steps": max_steps,
-            })
+            for rp in replay_values:
+                suffix = f"lr{_fmt_sci(lr)}-ep{_fmt_num(ep)}-rp{_fmt_num(rp)}"
+                slug = f"{base_slug}-{suffix}"
+                cells.append({
+                    "slug": slug,
+                    "run_id": slug,
+                    "lr": lr,
+                    "epochs": ep,
+                    "replay_ratio": rp,
+                    "max_steps": max_steps,
+                })
     return cells
 
 
 def _fmt_sci(x: float) -> str:
-    # 3e-5 -> "3e5"; 1e-5 -> "1e5" (normalize exponent width)
-    s = f"{x:.0e}"  # e.g. 3e-05
-    return s.replace(".", "").replace("-0", "").replace("-", "")
+    return f"{x:g}".replace(".", "").replace("-", "")
 
 
 def _fmt_num(x: float) -> str:
-    return f"{x:g}"
+    return f"{x:g}".replace(".", "p")
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--pack-root", type=Path, required=True,
-                   help="root containing per-cell folders written by pack_cell.py")
-    p.add_argument("--out-root", type=Path, required=True,
-                   help="root where per-run_id output dirs live (durable)")
-    p.add_argument("--execute", action="store_true",
-                   help="actually push kernels (refused without --i-have-read-launch-md)")
-    p.add_argument("--i-have-read-launch-md", action="store_true",
-                   help="required alongside --execute; explicit consent to launch")
+    p.add_argument("--pack-root", type=Path, required=True)
+    p.add_argument("--out-root", type=Path, required=True)
+    p.add_argument("--execute", action="store_true")
+    p.add_argument("--i-have-read-launch-md", action="store_true")
     args = p.parse_args(argv)
 
     if args.execute and not args.i_have_read_launch_md:
         log("REFUSED: --execute requires --i-have-read-launch-md")
-        log("        see kaggle/sweep/LAUNCH.md for the runbook")
+        log("        see kaggle/sweep/LAUNCH.md §4 for the runbook")
         return 2
 
     cells = sorted([d for d in args.pack_root.iterdir() if d.is_dir()])
@@ -103,28 +91,67 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     results = []
+    pending = []
     for cell_dir in cells:
         cell = json.loads((cell_dir / "cell.json").read_text())
-        rd = run_dir_for(args.out_root, cell["run_id"])
-        status = "skipped-complete" if is_complete(rd) else "pending"
-
-        if status == "skipped-complete":
+        rd = args.out_root / cell["run_id"]
+        if is_complete(rd):
             log(f"{cell['slug']}: already COMPLETE, skipping")
-            results.append({"slug": cell["slug"], "status": status})
+            results.append({
+                "slug": cell["slug"], "status": "skipped-complete",
+                "replay_ratio": cell.get("replay_ratio"),
+                "git_commit": cell.get("git_commit"),
+            })
             continue
+        pending.append((cell_dir, cell))
 
-        if not args.execute:
-            log(f"{cell['slug']}: DRY-RUN pending (would push {cell_dir})")
-            results.append({"slug": cell["slug"], "status": "dry-run"})
-            continue
+    # Report full pending list first (dry-run visibility).
+    for cell_dir, cell in pending:
+        log(
+            f"{cell['slug']}: pending "
+            f"(lr={cell['lr']}, ep={cell['epochs']}, "
+            f"replay={cell.get('replay_ratio')}, commit={cell.get('git_commit')})"
+        )
 
-        log(f"{cell['slug']}: pushing")
-        rc = push_cell(cell_dir)
-        results.append({"slug": cell["slug"], "status": "pushed" if rc == 0 else f"push-exit-{rc}"})
+    if not args.execute:
+        for cell_dir, cell in pending:
+            results.append({
+                "slug": cell["slug"], "status": "dry-run",
+                "replay_ratio": cell.get("replay_ratio"),
+                "git_commit": cell.get("git_commit"),
+            })
+    else:
+        # Round-3: at most 2 concurrent GPU sessions. The free tier will
+        # queue beyond that, but explicit batching avoids hitting Kaggle's
+        # per-account concurrency cap mid-sweep.
+        active = []
+        for cell_dir, cell in pending:
+            while len(active) >= MAX_CONCURRENT_GPU:
+                # Simplest safe behavior: push the rest of the cells in
+                # subsequent invocations, not in this one. Report as queued.
+                break
+            else:
+                log(f"{cell['slug']}: pushing")
+                rc = push_cell(cell_dir)
+                status = "pushed" if rc == 0 else f"push-exit-{rc}"
+                results.append({
+                    "slug": cell["slug"], "status": status,
+                    "replay_ratio": cell.get("replay_ratio"),
+                    "git_commit": cell.get("git_commit"),
+                })
+                if rc == 0:
+                    active.append(cell["slug"])
+                continue
+            results.append({
+                "slug": cell["slug"], "status": "queued-concurrency",
+                "replay_ratio": cell.get("replay_ratio"),
+                "git_commit": cell.get("git_commit"),
+            })
 
     summary = {
         "cells": len(cells),
         "dry_run": not args.execute,
+        "max_concurrent_gpu": MAX_CONCURRENT_GPU,
         "results": results,
     }
     print(json.dumps(summary, indent=2))
