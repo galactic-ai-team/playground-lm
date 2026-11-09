@@ -431,22 +431,50 @@ def load_dolly(limit: int, seed: int) -> list[dict]:
 
 
 def gen_arithmetic(n: int, seed: int) -> list[dict]:
+    """Exact-label arithmetic with diversified phrasing (Round 2).
+
+    Round-1 used three "What is N op N?" skeletons; group-by-template then
+    dumped one whole operator into val. More phrasings → more template
+    buckets → val gets a meaningful held-out count closer to val_frac.
+    """
     rng = random.Random(seed + 17)
-    ops = {
-        "add": lambda a, b: (f"What is {a} + {b}?", str(a + b)),
-        "sub": lambda a, b: (f"What is {a} - {b}?", str(a - b)),
-        "mul": lambda a, b: (f"What is {a} * {b}?", str(a * b)),
+    # Each (kind, template) becomes its own template_key via digit→N skeleton.
+    phrasing = {
+        "add": [
+            lambda a, b: (f"What is {a} + {b}?", str(a + b)),
+            lambda a, b: (f"Compute {a} plus {b}.", str(a + b)),
+            lambda a, b: (f"Add {a} and {b}.", str(a + b)),
+            lambda a, b: (f"{a} + {b} = ?", str(a + b)),
+            lambda a, b: (f"Find the sum of {a} and {b}.", str(a + b)),
+        ],
+        "sub": [
+            lambda a, b: (f"What is {a} - {b}?", str(a - b)),
+            lambda a, b: (f"Compute {a} minus {b}.", str(a - b)),
+            lambda a, b: (f"Subtract {b} from {a}.", str(a - b)),
+            lambda a, b: (f"{a} - {b} = ?", str(a - b)),
+            lambda a, b: (f"Find the difference {a} − {b}.", str(a - b)),
+        ],
+        "mul": [
+            lambda a, b: (f"What is {a} * {b}?", str(a * b)),
+            lambda a, b: (f"Compute {a} times {b}.", str(a * b)),
+            lambda a, b: (f"Multiply {a} by {b}.", str(a * b)),
+            lambda a, b: (f"{a} × {b} = ?", str(a * b)),
+            lambda a, b: (f"Find the product of {a} and {b}.", str(a * b)),
+        ],
     }
+    kinds = list(phrasing)
     rows = []
     for i in range(n):
-        kind = rng.choice(list(ops))
+        kind = kinds[i % len(kinds)]
+        templates = phrasing[kind]
+        tmpl = templates[(i // len(kinds)) % len(templates)]
         if kind == "mul":
             a, b = rng.randint(2, 12), rng.randint(2, 12)
         else:
             a, b = rng.randint(0, 200), rng.randint(0, 200)
             if kind == "sub" and b > a:
                 a, b = b, a
-        user, ans = ops[kind](a, b)
+        user, ans = tmpl(a, b)
         # Short exact answer only — no prose filler.
         rows.append(
             {
