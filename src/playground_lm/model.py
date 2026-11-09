@@ -49,23 +49,21 @@ def chunked_cross_entropy(logits, targets, chunk_tokens=LOSS_CHUNK_TOKENS):
     """
     flat_logits = logits.reshape(-1, logits.size(-1))
     flat_targets = targets.reshape(-1)
-    count = int((flat_targets != IGNORE_INDEX).sum().item())
-    if count == 0:
-        # No supervised tokens in this batch (should be rare); keep a connected zero.
-        return flat_logits.sum() * 0.0
+    # Tensor ops only (no .item() / Python if on counts) so torch.compile(fullgraph=True) works.
+    # Suggested by Claude's Stage E mask audit; applied as Lumi integration glue.
+    count = (flat_targets != IGNORE_INDEX).sum()
     use_checkpoint = torch.is_grad_enabled() and flat_logits.requires_grad
     total = flat_logits.new_zeros((), dtype=torch.float32)
     for start in range(0, flat_targets.numel(), chunk_tokens):
         rows = slice(start, start + chunk_tokens)
         chunk_targets = flat_targets[rows]
-        if int((chunk_targets != IGNORE_INDEX).sum().item()) == 0:
-            continue
         if use_checkpoint:
             part = checkpoint(_cross_entropy_sum, flat_logits[rows], chunk_targets, use_reentrant=False)
         else:
             part = _cross_entropy_sum(flat_logits[rows], chunk_targets)
         total = total + part
-    return total / count
+    # Fully-ignored batch: clamp keeps a connected zero (sum of ignored CE is 0).
+    return total / count.clamp(min=1).to(total.dtype)
 
 
 def _save_tied_weight(module, state_dict, prefix, local_metadata):
