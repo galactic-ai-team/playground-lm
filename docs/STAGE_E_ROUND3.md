@@ -1,79 +1,70 @@
 # Stage E — Round 3 status (truthful)
 
-**Updated:** Mon Nov 9, 2026 ~7:54 AM America/New_York  
-**Authority:** Stephon approved Round 3 (“Yup”, 7:07 AM ET). Goal: mix FineWeb-Edu-style Stage B/C replay into SFT so FineWeb val rise ≤0.02 vs C31101 (Claude gate). **No merge. No live deploy. No promotion. No private suite. Free Kaggle only.**
+**Updated:** Mon Nov 9, 2026 ~9:11 AM EST  
+**Authority:** Stephon approved Round 3 (“Yup”, 7:07 AM ET). Goal: FineWeb-Edu-style replay mix so FineWeb val rise ≤0.02 vs C31101. **No merge. No live deploy. No promotion. No private suite. Free compute only.**
 
 ## Code / PR
 
 | Item | Value |
 |------|-------|
-| Branch | `review/stage-e-round3` (off PR99 tip) |
-| Tip | `a0c1699` |
+| Branch | `review/stage-e-round3` |
+| Tip (train pin) | `a0c1699` (replay path fix) |
 | Draft PR | https://github.com/galactic-ai-team/playground-lm/pull/100 (refs #99) |
-| CI | **green** — `ci/test` SUCCESS, notebook freshness SUCCESS, Vercel SUCCESS |
-| Local suites (spot) | replay+sweep **26 passed**; full suite previously **553 pytest + 27 Node** on tip before path fix (CI re-green after `a0c1699`) |
-| Disk | Box ~77% after scratch cleanup; **no** `runs_round2` delete (awaits Stephon). No local multi-GB ckpt/data downloads. |
+| CI | green on tip pushes |
+| Mixer | Claude **online** ReplayMixer = train path; Nova **offline** mixer kept for audited corpora |
 
 ## Per-member accept / change / reject
 
 | Member | Accepted | Changed (Lumi glue) | Rejected |
 |--------|----------|---------------------|----------|
-| **Nova** | Offline `mix_stage_e_replay` corpus mixer + tests (audited offline path) | Kept alongside Claude; **not** primary Kaggle train path | — |
-| **Claude** | Online `ReplayMixer` (`PLM_REPLAY_RATIO`+`PLM_REPLAY_BIN`), `sweep_config` Round-3 grid, `STAGE_E_GATES.md` FineWeb rise ≤0.02 | **Primary train path** on Kaggle | — |
-| **GPT-6** | Kaggle regression package + receipt bridge → Claude gate (25 tests) | — | Private suite **not** run |
-| **Dee** | Replay-aware `kaggle/sweep` packer/launcher | Placeholders → real `galacticaiteam/plm-stageb-data`; file-top `os.environ` inject; `DEFAULT_REPLAY_BIN` → `/kaggle/input/datasets/galacticaiteam/plm-stageb-data/train.bin` | Invented PLACEHOLDER dataset slugs (fixed before launch) |
-| **Gemini** | `statusAfterGeneration` clears stuck “Stopping generation…” | Wired into `demo/app.js` `finally` + Node tests | — |
+| **Nova** | Offline `mix_stage_e_replay` | Kept; not Kaggle train path | — |
+| **Claude** | Online ReplayMixer + sweep/gates | Primary train path | — |
+| **GPT-6** | Kaggle regression + bridge | Local CPU regression used (GPU slots blocked); identical Round-2 knobs | Private suite not run |
+| **Dee** | Replay-aware packer | PLACEHOLDERs → `plm-stageb-data`; file-top env; `datasets/` mount path | PLACEHOLDER slugs |
+| **Gemini** | `statusAfterGeneration` | Wired into `app.js` + Node tests | — |
 
-**Mixer reconcile:** Claude online mixer = train; Nova offline mixer retained for audited corpus builds. Both credited.
-
-## Replay source
+## Replay corpus
 
 | Item | Value |
 |------|-------|
-| Dataset | `galacticaiteam/plm-stageb-data` (private; `train.bin` ~516MB FineWeb-style) |
-| Val (optional mount) | `galacticaiteam/plm-stagec-val` |
-| SFT data | `galacticaiteam/plm-stage-e-data` |
-| Seed ckpt | Stage C step **31101** via `kernel_sources: galacticaiteam/plm-stage-c-train` (SHA `4604d3a1…76275`) |
-| Mount layout | Probe proved private datasets appear under `/kaggle/input/datasets/<owner>/<slug>/` (not short `/kaggle/input/<slug>/`) — https://www.kaggle.com/code/galacticaiteam/plm-stage-e-r3-mount-probe |
+| Chosen | `galacticaiteam/plm-stageb-data` |
+| Provenance | `fineweb-edu` / `sample-10BT` (tokenize-stats.json) |
+| Stage C | Continued FineWeb via `plm-stage-c-data-prep-s0..s7` kernel shards — **no** single Stage-C train.bin dataset on Kaggle |
+| Mount path | `/kaggle/input/datasets/galacticaiteam/plm-stageb-data/train.bin` |
 
-## Sweep plan (free T4 ×2 concurrency)
+## Sweep (free T4)
 
-| Cell | replay | lr | epochs | max_steps | Kernel URL |
-|------|-------:|---:|-------:|----------:|------------|
-| rr25 @ 1e-5 | 0.25 | 1e-5 | 1 | 31140 | https://www.kaggle.com/code/galacticaiteam/plm-stage-e-r3-rr25-ep1-lr1e5 |
-| rr50 @ 1e-5 | 0.50 | 1e-5 | 1 | 31140 | https://www.kaggle.com/code/galacticaiteam/plm-stage-e-r3-rr50-ep1-lr1e5 |
-| rr50 @ 3e-5 | 0.50 | 3e-5 | 1 | 31140 | https://www.kaggle.com/code/galacticaiteam/plm-stage-e-r3-rr50-ep1-lr3e5 |
+| Cell | replay | lr | Kernel | Final step | Weights SHA256 | Status |
+|------|-------:|---:|--------|------------:|----------------|--------|
+| rr25 @ 1e-5 | 0.25 | 1e-5 | https://www.kaggle.com/code/galacticaiteam/plm-stage-e-r3-rr25-ep1-lr1e5 | 31140 | `da0abc389e9ec3e186726940be482cb9d9e858336395875964b24d027ae2b7a0` | COMPLETE + frozen |
+| rr50 @ 1e-5 | 0.50 | 1e-5 | https://www.kaggle.com/code/galacticaiteam/plm-stage-e-r3-rr50-ep1-lr1e5 | 31140 | `ce1fa2098236656d149437638601dfafa7744ab3f69ff52739be0c95199f818b` | COMPLETE + frozen |
+| rr50 @ 3e-5 | 0.50 | 3e-5 | https://www.kaggle.com/code/galacticaiteam/plm-stage-e-r3-rr50-ep1-lr3e5 | 31140 | `bad27ad68038ad23ba2f10f5cbf2d670b2bea7ec33a96e74e485d1a1a86faf7c` | COMPLETE + frozen |
 
-Packs: `/workspace/plm_stageE/sweep_round3_pack/` (pinned `PLM_GIT_COMMIT=a0c1699`, correct `datasets/` replay path + `resolve_replay_bin`).
+Seed C31101 SHA `4604d3a1b105cc70601352fbd83d6d61b34435b3cf09151b0562592a7b076275`. Final ckpts also retained as Kaggle kernel outputs.
 
-### Launch status (this morning ET)
+## Regression (public subsets — nonpublishable)
 
-| Event | Detail |
-|-------|--------|
-| v1 push | Ran; **ERROR** — hardcoded short-path `PLM_REPLAY_BIN` missing (`FileNotFoundError: …/plm-stageb-data/train.bin`). Commit pin was `336b42f` (pre-resolve). |
-| Mount probe (CPU) | COMPLETE — confirmed `…/datasets/galacticaiteam/plm-stageb-data/train.bin` |
-| Path fix | Commit `a0c1699` + rebuilt packs |
-| v2/v3 re-push | **Blocked:** `Maximum batch GPU session count of 2 reached` even while all three show `ERROR`. ListKernelSessions returns no active sessions (stale counter / cooldown). Box poller retrying every 90s. |
-| CPU dry-run | https://www.kaggle.com/code/galacticaiteam/plm-stage-e-r3-rr25-dry (`PLM_DRY_RUN=1`, no GPU) — launched to confirm `datasets/` replay resolve without consuming GPU slots; still RUNNING at doc update. |
-| Outputs policy | Keep final ckpts as **Kaggle kernel outputs** only; download **small** metrics/receipts JSON only |
+Same knobs as Round 2: `max_val_batches=20`, `benchmark_limit=200`, seed `20261108`, Stage-C FineWeb `val.bin` SHA `1fe7dffe…a9e7`. Ran **local CPU** (Kaggle GPU session counter stuck; free-tier).
 
-## Regression / Claude gate
+| model | FineWeb val↓ | Δ vs C | HellaSwag↑ | LAMBADA↑ | masked SFT val↓ | Claude gate |
+|---|---:|---:|---:|---:|---:|---|
+| C | 3.0520 | — | 0.370 | 0.240 | 3.1029 | baseline |
+| r3-rr25-ep1-lr1e5 | 3.0670 | +0.0150 | 0.390 | 0.265 | 2.8544 | **PASS** |
+| r3-rr50-ep1-lr1e5 | 3.0592 | +0.0072 | 0.390 | 0.260 | 2.8685 | **PASS** |
+| r3-rr50-ep1-lr3e5 | 3.0603 | +0.0083 | 0.385 | 0.245 | 2.8306 | **PASS** |
 
-| Item | Value |
-|------|-------|
-| Subsets | FineWeb **20** batches; HellaSwag/LAMBADA **200**; seed **20261108** (identical Round 2) |
-| Baseline | C31101 receipts reference |
-| Gate | FineWeb rise ≤ **0.02**; report table C vs candidates incl masked SFT val |
-| Status | **Not run yet** — blocked on successful sweep COMPLETE + small JSON receipts |
-| Private suite | **Not run** (per Stephon) |
-| Promote | **No** |
+Tolerances: FineWeb rise ≤0.02; HS drop ≤0.01; LAMBADA drop ≤0.015.  
+**Best FineWeb Δ:** r3-rr50-ep1-lr1e5 (+0.0072). **Best masked SFT:** r3-rr50-ep1-lr3e5 (2.8306).  
+**Chosen for promote: none** — all PASS gate but **Stephon must choose**; no auto-promote.
 
-## Round-2 baseline (for gate comparison)
+Receipts: `/workspace/plm_stageE/regression_round3/` (+ `COMPARISON.md`, FREEZE.json under each passer).
 
-All Round-2 candidates FAIL FineWeb gate (closest ep1-lr1e5 +0.0287). See `STAGE_E_ROUND2.md`.
+## Private suite
+
+**Not run.**
 
 ## Blockers / next
 
-1. **GPU concurrency ghost slots** — cannot push fixed packs until Kaggle frees the batch GPU session counter (or Stephon cancels sessions in the web UI).
-2. After slots free: push three cells → wait COMPLETE → download **only** small metrics/receipts → run GPT-6 Kaggle regression → Claude gate table.
-3. Draft PR #100 stays unmerged; no live change; no `runs_round2` local delete until Stephon says yes.
+1. Stephon chooses among three PASS candidates (or requests more epochs) before any promote.
+2. Draft PR #100 stays unmerged.
+3. Fresh private suite still needed after freeze choice.
