@@ -27,8 +27,13 @@ never silently kept):
     straddle train/val), same rule as Stages C/D;
   - denylist guard: an example is rejected if its normalized text
     exactly matches a denylist text, or (for texts of >= 13 words)
-    shares a word 13-gram with one. The default denylist is the eval
-    lane's held-out probes (evals/prompts.json). This word-level guard
+    shares a word 13-gram with one. The default denylist is the
+    behavior suite's frozen prompts
+    (evals/behavior/behavior_eval.prompts.frozen.json, prompts[].user);
+    the legacy evals/prompts.json schemas (held_out_probes[].prompt,
+    probes[].prompt) are also accepted. Loading is FAIL-CLOSED: a
+    missing, malformed, or empty denylist aborts the build unless
+    --allow-empty-denylist is passed explicitly. This word-level guard
     complements — does not replace — the token-level 13-gram
     contamination_check.py run against the tokenized bins, and the
     benchmark row exclusions from Stages B/C still apply to scoring;
@@ -319,11 +324,85 @@ def audit_examples(
     return kept, report
 
 
-def load_eval_prompts(path: Path) -> list[str]:
-    """Held-out probe prompts from evals/prompts.json (denylist source)."""
-    data = json.loads(path.read_text())
-    probes = data.get("held_out_probes") or data.get("probes") or []
-    return [p["prompt"] for p in probes if p.get("prompt")]
+DEFAULT_DENYLIST_PATH = Path("evals/behavior/behavior_eval.prompts.frozen.json")
+
+
+def _denylist_entries(data: object, path: Path) -> tuple[list, str, str]:
+    """Pick the prompt list out of a denylist JSON document.
+
+    Returns (entries, schema label, text field). Supported schemas,
+    checked explicitly:
+      behavior suite (frozen): {"prompts": [{"user": ...}, ...]}
+      legacy demo probes:      {"held_out_probes": [{"prompt": ...}]}
+                               {"probes": [{"prompt": ...}]}
+      bare list of either entry shape.
+    Anything else is malformed and raises ValueError.
+    """
+    if isinstance(data, list):
+        return data, "[]", "user"
+    if isinstance(data, dict):
+        if isinstance(data.get("prompts"), list):
+            return data["prompts"], "prompts[].user", "user"
+        if isinstance(data.get("held_out_probes"), list):
+            return data["held_out_probes"], "held_out_probes[].prompt", "prompt"
+        if isinstance(data.get("probes"), list):
+            return data["probes"], "probes[].prompt", "prompt"
+    raise ValueError(
+        f"denylist at {path} matches no supported schema "
+        "(prompts[].user / held_out_probes[].prompt / probes[].prompt)"
+    )
+
+
+def load_denylist(
+    path: Path, *, required: bool = True
+) -> tuple[list[str], str | None]:
+    """Load denylist prompt texts. Returns (texts, schema label).
+
+    Fail-closed when required=True (the CLI default): a missing file,
+    invalid JSON, an unsupported schema, or a file that yields zero
+    usable prompt texts raises instead of silently returning an empty
+    denylist. With required=False those cases return ([], None);
+    malformed entries inside an otherwise valid file are skipped, but
+    if every entry is unusable the file counts as empty.
+    """
+    if not path.exists():
+        if required:
+            raise FileNotFoundError(f"required denylist not found: {path}")
+        return [], None
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        if required:
+            raise ValueError(f"denylist at {path} is not valid JSON: {exc}") from exc
+        return [], None
+    try:
+        entries, schema, field = _denylist_entries(data, path)
+    except ValueError:
+        if required:
+            raise
+        return [], None
+    texts: list[str] = []
+    for entry in entries:
+        if isinstance(entry, str):
+            text = entry
+        elif isinstance(entry, dict):
+            text = entry.get(field) or entry.get("user") or entry.get("prompt") or ""
+        else:
+            text = ""
+        if isinstance(text, str) and text.strip():
+            texts.append(text)
+    if required and not texts:
+        raise ValueError(
+            f"denylist at {path} yielded zero usable prompts "
+            f"(schema {schema}); refusing to build without exclusions"
+        )
+    return texts, schema
+
+
+def load_eval_prompts(path: Path, *, required: bool = True) -> list[str]:
+    """Denylist prompt texts (see load_denylist for schemas/fail-closed)."""
+    texts, _schema = load_denylist(path, required=required)
+    return texts
 
 
 # ------------------------------------------------------------------ build
@@ -401,14 +480,21 @@ def main() -> None:
     ap.add_argument("--arith-count", type=int, default=1000)
     ap.add_argument("--seed", type=int, default=20261108)
     ap.add_argument("--val-pct", type=int, default=10)
-    ap.add_argument("--eval-prompts", type=Path, default=Path("evals/prompts.json"),
-                    help="held-out probes JSON used as the denylist")
+    ap.add_argument("--eval-prompts", type=Path, default=DEFAULT_DENYLIST_PATH,
+                    help="denylist JSON (default: the behavior suite's "
+                         "frozen prompts, prompts[].user)")
+    ap.add_argument("--allow-empty-denylist", action="store_true",
+                    help="build even if the denylist is missing/malformed/"
+                         "empty (default is fail-closed)")
     ap.add_argument("--no-identity", action="store_true")
     args = ap.parse_args()
 
-    denylist: list[str] = []
-    if args.eval_prompts.exists():
-        denylist = load_eval_prompts(args.eval_prompts)
+    try:
+        denylist, denylist_schema = load_denylist(
+            args.eval_prompts, required=not args.allow_empty_denylist
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        ap.error(str(exc))
     train, val, stats = build_stage_e(
         dolly_path=args.dolly_jsonl,
         arith_count=args.arith_count,
@@ -418,6 +504,8 @@ def main() -> None:
         include_identity=not args.no_identity,
     )
     stats["denylist_texts"] = len(denylist)
+    stats["denylist_path"] = str(args.eval_prompts)
+    stats["denylist_schema"] = denylist_schema
     written = write_stage_e(args.out, train, val, stats)
     print(json.dumps(written, indent=2))
 

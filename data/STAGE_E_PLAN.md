@@ -38,9 +38,13 @@ Stage E additions in `build_stage_e_corpus.py`:
 
 - A denylist guard at build time: examples exactly matching, or
   sharing a word 13-gram with, a denylist text are dropped and counted.
-  Default denylist = the eval lane's held-out probes
-  (`evals/prompts.json`), so Stage E can never train on the demo's own
-  probe prompts.
+  Default denylist = the behavior suite's frozen prompts
+  (`evals/behavior/behavior_eval.prompts.frozen.json`, `prompts[].user`;
+  the legacy `evals/prompts.json` schemas are also accepted), so Stage E
+  can never train on the eval suites' own prompts. Loading is
+  fail-closed: a missing, malformed, or empty denylist aborts the build
+  unless `--allow-empty-denylist` is passed explicitly, and the stats
+  sidecar records the denylist path, schema, and count used.
 - The token-level checker still runs on the final tokenized Stage E
   bins before any training; the word-level guard is a complement, not
   a replacement.
