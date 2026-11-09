@@ -229,3 +229,18 @@ export function handleStopHotkey(event, { isGenerating, onStop } = {}) {
   return true;
 }
 
+/**
+ * Status pill after generation finalizes.
+ * Prevents a stuck "Stopping generation…" after Stop/Escape (mobile bug).
+ */
+export function statusAfterGeneration({ stopped = false, error = false, hasSession = true } = {}) {
+  if (error) {
+    return { text: 'Generation failed', ready: false, error: true };
+  }
+  if (!hasSession) {
+    return { text: 'Model not loaded', ready: false, error: true };
+  }
+  // stopped or normal completion → ready again
+  return { text: 'Model ready', ready: true, error: false };
+}
+
