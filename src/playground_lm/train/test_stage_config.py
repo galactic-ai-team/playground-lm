@@ -53,8 +53,9 @@ def test_stage_case_insensitive():
 
 
 def test_invalid_stage_raises():
-    with pytest.raises(ValueError, match="unknown stage"):
-        resolve_stage_plan("E")
+    # Stage E is a real preset (instruction/SFT); unknown letters still raise.
+    plan = resolve_stage_plan("E")
+    assert plan.schedule_start == 31101
     with pytest.raises(ValueError, match="unknown stage"):
         resolve_stage_plan("xyz")
 

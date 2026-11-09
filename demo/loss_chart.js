@@ -7,7 +7,7 @@
  *   }
  *
  * Includes Stage-C session boundary milestone markers (2035 / 10907 / 19366 / 31101 end)
- * plus the Stage D Playground SFT marker (31104)
+ * plus Stage D (31104) and Stage E Round 3 (31140) markers
  * rendered strictly as step-axis vertical reference lines with no fabricated loss points.
  */
 
@@ -17,6 +17,7 @@ export const DEFAULT_STAGE_C_MILESTONES = [
   { step: 19366, shortLabel: 's2 end', description: 'Stage C s2 end / s3 start (step 19,366)' },
   { step: 31101, shortLabel: 's3 end', description: 'Stage C pretraining end (step 31,101)' },
   { step: 31104, shortLabel: 'Stage D', description: 'Stage D Playground SFT (step 31,104 · val 3.181)', isStageD: true },
+  { step: 31140, shortLabel: 'Stage E', description: 'Stage E Round 3 replay SFT (step 31,140 · subset FineWeb 3.059)', isStageE: true },
 ];
 
 export function computeEmaSeries(values, weight = 0.9) {
@@ -172,7 +173,7 @@ export function renderLossChart(container, data, options = {}) {
       <span><i class="swatch swatch-ema"></i> Train EMA (0.9)</span>
       <span><i class="swatch swatch-raw"></i> Train Raw</span>
       <span><i class="swatch swatch-val"></i> Val Loss</span>
-      <span><i class="swatch swatch-milestone"></i> Milestones (2,035 / 10,907 / 19,366 / 31,101 / Stage D 31,104)</span>
+      <span><i class="swatch swatch-milestone"></i> Milestones (2,035 / 10,907 / 19,366 / 31,101 / Stage D 31,104 / Stage E 31,140)</span>
       ${
         data.summary?.best_val_loss != null
           ? `<span class="mono-tag">best val: ${Number(data.summary.best_val_loss).toFixed(3)} @ step ${Number(data.summary.best_val_step).toLocaleString()}</span>`

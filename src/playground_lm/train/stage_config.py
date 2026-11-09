@@ -61,6 +61,12 @@ STAGE_PRESETS: dict[str, dict] = {
     "D": {"max_steps": 31501, "warmup_steps": 20,
           "milestones": (31201, 31301, 31401, 31501),
           "lr": 6e-5, "schedule_start": 31101, "effective_batch": 24, "eval_interval": 25},
+    # Stage E: instruction/SFT continuation from Stage C final (31101) with
+    # completion-only loss. Lower LR, smaller batch, frequent eval. max_steps
+    # is a placeholder; launcher sets PLM_MAX_STEPS from corpus size.
+    "E": {"max_steps": 32001, "warmup_steps": 50,
+          "milestones": (31201, 31401, 31601, 31801, 32001),
+          "lr": 3e-5, "schedule_start": 31101, "effective_batch": 24, "eval_interval": 25},
 }
 
 STAGE_C_FINAL_STEP = 31101

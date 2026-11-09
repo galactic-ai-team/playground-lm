@@ -1,0 +1,90 @@
+{
+  "frozen_at_et": "2026-11-08 06:56 PM ET",
+  "seed": 20261108,
+  "notes": "Held-out behavior probes frozen BEFORE Stage E hyperparameter iteration. Not used for training. Arithmetic uses seed 424242 (disjoint from training arithmetic seed 20261108+17). PROMPTS ONLY \u2014 expected answers live in behavior_eval.expect.frozen.json (eval lane). Do not mine these for training.",
+  "prompts": [
+    {
+      "id": "greet-1",
+      "category": "greeting",
+      "user": "hello"
+    },
+    {
+      "id": "greet-2",
+      "category": "greeting",
+      "user": "Hi there!"
+    },
+    {
+      "id": "id-1",
+      "category": "identity",
+      "user": "Who are you?"
+    },
+    {
+      "id": "id-2",
+      "category": "identity",
+      "user": "Are you ChatGPT?"
+    },
+    {
+      "id": "fmt-1",
+      "category": "format",
+      "user": "Reply with only the word OK."
+    },
+    {
+      "id": "fmt-2",
+      "category": "format",
+      "user": "Return only YES."
+    },
+    {
+      "id": "arith-1",
+      "category": "arithmetic",
+      "user": "What is 17 + 28?"
+    },
+    {
+      "id": "arith-2",
+      "category": "arithmetic",
+      "user": "What is 90 - 14?"
+    },
+    {
+      "id": "arith-3",
+      "category": "arithmetic",
+      "user": "What is 8 * 7?"
+    },
+    {
+      "id": "arith-4",
+      "category": "arithmetic",
+      "user": "What is 12 * 11?"
+    },
+    {
+      "id": "qa-1",
+      "category": "simple_qa",
+      "user": "What color is the sky on a clear day?"
+    },
+    {
+      "id": "qa-2",
+      "category": "simple_qa",
+      "user": "Name a primary color."
+    },
+    {
+      "id": "multi-1",
+      "category": "multi_turn",
+      "messages": [
+        {
+          "role": "user",
+          "content": "My favorite number is 9."
+        },
+        {
+          "role": "assistant",
+          "content": "Got it."
+        },
+        {
+          "role": "user",
+          "content": "What favorite number did I just tell you?"
+        }
+      ]
+    },
+    {
+      "id": "rep-1",
+      "category": "repetition_probe",
+      "user": "Say the word apple once."
+    }
+  ]
+}

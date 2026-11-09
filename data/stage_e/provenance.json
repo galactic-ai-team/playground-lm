@@ -1,0 +1,54 @@
+{
+  "seed": 20261108,
+  "sources": [
+    {
+      "id": "databricks/databricks-dolly-15k",
+      "url": "https://huggingface.co/datasets/databricks/databricks-dolly-15k",
+      "license": "CC BY-SA 3.0",
+      "notes": "Filtered to short English instruction/response pairs; long contexts dropped."
+    },
+    {
+      "id": "generated-arithmetic",
+      "license": "generated exact-label arithmetic",
+      "notes": "Programmatic Q/A with exact numeric labels; not model-generated."
+    },
+    {
+      "id": "generated-identity",
+      "license": "generated",
+      "notes": "Short PlaygroundLM identity and brief instruction-following examples."
+    }
+  ],
+  "format": "User:/Assistant: with <|endoftext|> after assistant; completion-only masks",
+  "exclusions": [
+    "No Stage D playground lobby corpus",
+    "No evaluation items from HellaSwag/LAMBADA",
+    "No unpaid/unknown web scrapes"
+  ],
+  "train": {
+    "examples": 8379,
+    "prompt_tokens": 251240,
+    "completion_tokens": 389342,
+    "tokens": 640582,
+    "supervised_tokens": 389342,
+    "sha256_tokens": "469a38d3e7b68d438bf0e1345d6a9e0d4ae2dc056a3980d77025f0cdd395da62",
+    "sha256_masks": "b6109cb11439969c3b3aa2661a1eb10b9f02214ba9ad65b2b64a57d93b0cc075"
+  },
+  "val": {
+    "examples": 440,
+    "prompt_tokens": 14027,
+    "completion_tokens": 19729,
+    "tokens": 33756,
+    "supervised_tokens": 19729,
+    "sha256_tokens": "78a926f61ab5f1858269df3f3de9781258cebaa6ae90b321e1876c3256275b38",
+    "sha256_masks": "7379ddf8a77f3f478c81cfd7139068b0e2e343b836726a0b00c98dd59f1461ca"
+  },
+  "counts": {
+    "train_examples": 8379,
+    "val_examples": 440,
+    "by_source_train": {
+      "databricks/databricks-dolly-15k": 7603,
+      "generated-arithmetic": 601,
+      "generated-identity": 175
+    }
+  }
+}

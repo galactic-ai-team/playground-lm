@@ -26,7 +26,7 @@
   "rows": [
     {
       "id": "step_00002035",
-      "label": "PlaygroundLM Stage B — Step 2,035",
+      "label": "PlaygroundLM Stage B \u2014 Step 2,035",
       "step": 2035,
       "validation_split": "stage_b",
       "val_loss": 3.928,
@@ -36,7 +36,7 @@
     },
     {
       "id": "step_00010907",
-      "label": "PlaygroundLM Stage C s1 — Step 10,907",
+      "label": "PlaygroundLM Stage C s1 \u2014 Step 10,907",
       "step": 10907,
       "validation_split": "stage_c",
       "val_loss": 3.442,
@@ -46,7 +46,7 @@
     },
     {
       "id": "step_00019366",
-      "label": "PlaygroundLM Stage C s2 — Step 19,366",
+      "label": "PlaygroundLM Stage C s2 \u2014 Step 19,366",
       "step": 19366,
       "validation_split": "stage_c",
       "val_loss": 3.288,
@@ -56,7 +56,7 @@
     },
     {
       "id": "step_00031101",
-      "label": "PlaygroundLM Stage C final — Step 31,101",
+      "label": "PlaygroundLM Stage C final \u2014 Step 31,101",
       "step": 31101,
       "validation_split": "stage_c",
       "val_loss": 3.174,
@@ -66,13 +66,24 @@
     },
     {
       "id": "step_00031104",
-      "label": "PlaygroundLM Stage D finetune — Step 31,104",
+      "label": "PlaygroundLM Stage D finetune \u2014 Step 31,104",
       "val_loss": 3.181,
       "perplexity": 24.1,
       "hellaswag_acc_norm": 0.3,
       "lambada_acc": 0.245,
       "step": 31104,
       "validation_split": "stage_c"
+    },
+    {
+      "id": "step_00031140",
+      "label": "PlaygroundLM Stage E Round 3 \u2014 Step 31,140 (r3-rr50-ep1-lr1e5)",
+      "step": 31140,
+      "validation_split": "stage_c_subset_r3",
+      "val_loss": 3.059,
+      "perplexity": 21.3,
+      "hellaswag_acc_norm": 0.39,
+      "lambada_acc": 0.26,
+      "notes": "Round-3 regression subsets (same knobs as Round 2): FineWeb max_val_batches=20 (C on same knobs 3.052, \u0394+0.007); HellaSwag/LAMBADA limit=200. Not the full-coverage FineWeb numbers used for Stage C/D rows above. Private exact 1/60 vs C/D 0/60 (N=60; not promotion evidence)."
     },
     {
       "id": "gpt2_124m",
@@ -85,5 +96,5 @@
     }
   ],
   "source_type": "reported_rounded_summary",
-  "notes": "Rounded reported results. Stage B uses a different validation split and its val loss/PPL must not be directly compared with Stage C/D FineWeb rows. Stage C s1, s2, final (step 31,101), Stage D finetune (step 31,104), and GPT-2 use the same Stage C FineWeb-Edu val.bin. Stage D slightly raises FineWeb val loss vs Stage C final (3.181 vs 3.174) while improving LAMBADA (24.5% vs 23.0%); HellaSwag is flat (~30.0%). Both Stage C final and Stage D beat GPT-2 on FineWeb val loss (3.279) but trail on HellaSwag (30.9%) and LAMBADA (32.6%). Playground finetune-val loss (5.234 on 2143 tok) is a separate domain metric and is not shown in this table. Lower FineWeb-Edu validation loss does not establish superior general-purpose capabilities."
+  "notes": "Rounded reported results. Stage B uses a different validation split and its val loss/PPL must not be directly compared with Stage C/D FineWeb rows. Stage C s1, s2, final (step 31,101), Stage D finetune (step 31,104), and GPT-2 use the same Stage C FineWeb-Edu val.bin. Stage D slightly raises FineWeb val loss vs Stage C final (3.181 vs 3.174) while improving LAMBADA (24.5% vs 23.0%); HellaSwag is flat (~30.0%). Both Stage C final and Stage D beat GPT-2 on FineWeb val loss (3.279) but trail on HellaSwag (30.9%) and LAMBADA (32.6%). Playground finetune-val loss (5.234 on 2143 tok) is a separate domain metric and is not shown in this table. Lower FineWeb-Edu validation loss does not establish superior general-purpose capabilities. Stage E Round 3 (31,140) FineWeb/HS/LAMBADA in this table are Round-3 subset scores (C comparable subset FineWeb 3.052); do not compare Stage E FineWeb 3.059 directly to Stage C full-val 3.174. Private suite aggregate 1/60 vs 0/60."
 }

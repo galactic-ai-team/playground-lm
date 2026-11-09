@@ -7,3 +7,4 @@ out/
 
 # Stage C per-session push copies kernel-metadata-s<N>.json here (Dee, reply_0415)
 kaggle/stage_c_data/kernel-metadata.json
+data/finetune/

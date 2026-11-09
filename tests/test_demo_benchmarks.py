@@ -20,6 +20,13 @@ def load_table():
     )
 
 
+def row_by_id(table, row_id):
+    for row in table["rows"]:
+        if row["id"] == row_id:
+            return row
+    raise AssertionError(f"missing row {row_id}")
+
+
 def test_demo_benchmark_schema():
     table = load_table()
     assert table["columns"] == COLUMNS
@@ -31,6 +38,7 @@ def test_demo_benchmark_schema():
         "step_00019366",
         "step_00031101",
         "step_00031104",
+        "step_00031140",
         "gpt2_124m",
     ]
 
@@ -77,6 +85,7 @@ def test_reported_scores_unchanged():
         (3.288, 26.8, 0.288, 0.19),
         (3.174, 23.9, 0.3, 0.23),
         (3.181, 24.1, 0.3, 0.245),
+        (3.059, 21.3, 0.39, 0.26),
         (3.279, 26.6, 0.309, 0.326),
     ]
 
@@ -89,17 +98,23 @@ def test_validation_splits_are_explicit():
         "stage_c",
         "stage_c",
         "stage_c",
+        "stage_c_subset_r3",
         "stage_c",
     ]
 
-    assert "different validation split" in (
-        load_table()["notes"]
-    )
+    notes = load_table()["notes"]
+    assert "different validation split" in notes
+    assert "Stage E Round 3" in notes
+    assert "subset" in notes.lower()
 
 
 def test_no_overall_win_claim():
     table = load_table()
-    s2, final, stage_d, gpt2 = table["rows"][2:6]
+    s2 = row_by_id(table, "step_00019366")
+    final = row_by_id(table, "step_00031101")
+    stage_d = row_by_id(table, "step_00031104")
+    stage_e = row_by_id(table, "step_00031140")
+    gpt2 = row_by_id(table, "gpt2_124m")
 
     assert s2["val_loss"] > gpt2["val_loss"]
     assert s2["hellaswag_acc_norm"] < gpt2["hellaswag_acc_norm"]
@@ -114,6 +129,13 @@ def test_no_overall_win_claim():
     assert stage_d["hellaswag_acc_norm"] < gpt2["hellaswag_acc_norm"]
     assert stage_d["lambada_acc"] < gpt2["lambada_acc"]
     assert "does not establish superior" in table["notes"]
+
+    # Stage E FineWeb/HS/LAMBADA are Round-3 subset scores — must not be compared
+    # as a full-val win over Stage C / GPT-2; notes + split must stay explicit.
+    assert stage_e["validation_split"] == "stage_c_subset_r3"
+    assert "not comparable" in stage_e.get("notes", "").lower() or (
+        "subset" in table["notes"].lower()
+    )
 
 
 def test_frontend_supports_group_headers():
