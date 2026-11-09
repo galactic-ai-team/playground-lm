@@ -53,7 +53,8 @@ Packs: `/workspace/plm_stageE/sweep_round3_pack/` (pinned `PLM_GIT_COMMIT=a0c169
 | v1 push | Ran; **ERROR** — hardcoded short-path `PLM_REPLAY_BIN` missing (`FileNotFoundError: …/plm-stageb-data/train.bin`). Commit pin was `336b42f` (pre-resolve). |
 | Mount probe (CPU) | COMPLETE — confirmed `…/datasets/galacticaiteam/plm-stageb-data/train.bin` |
 | Path fix | Commit `a0c1699` + rebuilt packs |
-| v2/v3 re-push | **Blocked:** `Maximum batch GPU session count of 2 reached` even while all three show `ERROR`. ListKernelSessions returns no active sessions (stale counter / cooldown). Poller retrying. |
+| v2/v3 re-push | **Blocked:** `Maximum batch GPU session count of 2 reached` even while all three show `ERROR`. ListKernelSessions returns no active sessions (stale counter / cooldown). Box poller retrying every 90s. |
+| CPU dry-run | https://www.kaggle.com/code/galacticaiteam/plm-stage-e-r3-rr25-dry (`PLM_DRY_RUN=1`, no GPU) — launched to confirm `datasets/` replay resolve without consuming GPU slots; still RUNNING at doc update. |
 | Outputs policy | Keep final ckpts as **Kaggle kernel outputs** only; download **small** metrics/receipts JSON only |
 
 ## Regression / Claude gate
