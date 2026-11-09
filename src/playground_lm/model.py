@@ -18,13 +18,22 @@ from torch.utils.checkpoint import checkpoint
 LOSS_CHUNK_TOKENS = 2048
 
 
+IGNORE_INDEX = -100
+
+
 def _cross_entropy_sum(logits, targets):
     # FP32 softmax for this chunk only; works the same under autocast.
-    return F.cross_entropy(logits.float(), targets, reduction="sum")
+    # ignore_index lets SFT mask prompt tokens (completion-only loss).
+    return F.cross_entropy(
+        logits.float(),
+        targets,
+        reduction="sum",
+        ignore_index=IGNORE_INDEX,
+    )
 
 
 def chunked_cross_entropy(logits, targets, chunk_tokens=LOSS_CHUNK_TOKENS):
-    """Mean cross-entropy over all positions, computed in row chunks.
+    """Mean cross-entropy over supervised positions, computed in row chunks.
 
     The plain `F.cross_entropy(logits.float(), ...)` materialises an FP32
     copy of the full logits plus its FP32 log-softmax: at batch 12 x 1024 x
@@ -34,18 +43,27 @@ def chunked_cross_entropy(logits, targets, chunk_tokens=LOSS_CHUNK_TOKENS):
     logits and recomputes one chunk's softmax at a time in backward. Same
     value and gradients as the plain loss; the recompute is a cheap,
     memory-bound softmax, not the vocabulary matmul.
+
+    Targets equal to IGNORE_INDEX (-100) are excluded from the mean, which
+    enables completion-only SFT without changing the pretraining path.
     """
     flat_logits = logits.reshape(-1, logits.size(-1))
     flat_targets = targets.reshape(-1)
-    count = flat_targets.numel()
+    count = int((flat_targets != IGNORE_INDEX).sum().item())
+    if count == 0:
+        # No supervised tokens in this batch (should be rare); keep a connected zero.
+        return flat_logits.sum() * 0.0
     use_checkpoint = torch.is_grad_enabled() and flat_logits.requires_grad
     total = flat_logits.new_zeros((), dtype=torch.float32)
-    for start in range(0, count, chunk_tokens):
+    for start in range(0, flat_targets.numel(), chunk_tokens):
         rows = slice(start, start + chunk_tokens)
+        chunk_targets = flat_targets[rows]
+        if int((chunk_targets != IGNORE_INDEX).sum().item()) == 0:
+            continue
         if use_checkpoint:
-            part = checkpoint(_cross_entropy_sum, flat_logits[rows], flat_targets[rows], use_reentrant=False)
+            part = checkpoint(_cross_entropy_sum, flat_logits[rows], chunk_targets, use_reentrant=False)
         else:
-            part = _cross_entropy_sum(flat_logits[rows], flat_targets[rows])
+            part = _cross_entropy_sum(flat_logits[rows], chunk_targets)
         total = total + part
     return total / count
 

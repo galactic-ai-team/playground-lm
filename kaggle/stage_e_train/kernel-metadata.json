@@ -1,0 +1,20 @@
+{
+  "id": "galacticaiteam/plm-stage-e-train",
+  "id_no": 0,
+  "title": "PLM Stage E Train",
+  "code_file": "stage_e_train.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "dataset_sources": [
+    "galacticaiteam/plm-stage-e-sft"
+  ],
+  "kernel_sources": [
+    "galacticaiteam/plm-stage-c-train"
+  ],
+  "competition_sources": [],
+  "model_sources": []
+}

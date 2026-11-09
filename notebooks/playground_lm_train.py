@@ -41,7 +41,7 @@
 #
 # | Env var | Meaning | Default |
 # |---|---|---|
-# | `PLM_STAGE` | Training stage preset: `A`, `B`, `C`, `D` — sets `max_steps`, `warmup_steps`, milestones (and for `D`, the fine-tune LR, schedule start, batch and eval interval) | unset |
+# | `PLM_STAGE` | Training stage preset: `A`, `B`, `C`, `D`, `E` — sets `max_steps`, `warmup_steps`, milestones (and for `D`, the fine-tune LR, schedule start, batch and eval interval) | unset |
 # | `PLM_MAX_STEPS` | Override the stage's `max_steps` | stage default, else 200_000 |
 # | `PLM_WARMUP` | Override the stage's `warmup_steps` | stage default, else 2000 |
 # | `PLM_BATCH_SIZE` | Micro-batch size per GPU; `grad_accum_steps` is adjusted to keep the global effective batch at 96 sequences | `12` (P100); use `6` on T4 |
@@ -254,6 +254,7 @@ from playground_lm.model import PlaygroundLM
 from playground_lm.tokenizer import get_tokenizer
 from playground_lm.train.checkpoint import CheckpointManager
 from playground_lm.train.data import build_dataloader, build_permuted_dataloader
+from playground_lm.train.sft_data import build_sft_dataloader
 from playground_lm.train.loop import train as train_loop
 from playground_lm.train.upload_release import upload as upload_release
 
@@ -388,20 +389,43 @@ if SAMPLING == "permute":
 elif SAMPLING:
     raise ValueError(f"PLM_SAMPLING must be 'permute' or unset, got {SAMPLING!r}")
 else:
-    train_loader = build_dataloader(
-        DATA_DIR / "train.bin",
+    train_masks = DATA_DIR / "train.masks.bin"
+    if train_masks.is_file():
+        train_loader = build_sft_dataloader(
+            DATA_DIR / "train.bin",
+            train_masks,
+            context_len=MODEL_CONFIG["context_len"],
+            batch_size=TRAIN_CONFIG["batch_size"],
+            shuffle=True,
+            seed_offset=start_step + RANK * 1_000_000,
+        )
+        _log("[train] using completion-only SFT masks (train.masks.bin)")
+    else:
+        train_loader = build_dataloader(
+            DATA_DIR / "train.bin",
+            context_len=MODEL_CONFIG["context_len"],
+            batch_size=TRAIN_CONFIG["batch_size"],
+            shuffle=True,
+            stride=1,
+            seed_offset=start_step + RANK * 1_000_000,
+        )
+val_masks = DATA_DIR / "val.masks.bin"
+if val_masks.is_file():
+    val_loader = build_sft_dataloader(
+        DATA_DIR / "val.bin",
+        val_masks,
         context_len=MODEL_CONFIG["context_len"],
         batch_size=TRAIN_CONFIG["batch_size"],
-        shuffle=True,
-        stride=1,
-        seed_offset=start_step + RANK * 1_000_000,
+        shuffle=False,
+        drop_last=False,
     )
-val_loader = build_dataloader(
-    DATA_DIR / "val.bin",
-    context_len=MODEL_CONFIG["context_len"],
-    batch_size=TRAIN_CONFIG["batch_size"],
-    shuffle=False,
-)
+else:
+    val_loader = build_dataloader(
+        DATA_DIR / "val.bin",
+        context_len=MODEL_CONFIG["context_len"],
+        batch_size=TRAIN_CONFIG["batch_size"],
+        shuffle=False,
+    )
 
 
 # %% [markdown]

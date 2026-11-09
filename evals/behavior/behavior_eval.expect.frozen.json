@@ -1,0 +1,77 @@
+{
+  "frozen_at_et": "2026-11-08 06:56 PM ET",
+  "seed": 20261108,
+  "notes": "EVAL LANE ONLY (GPT-6). Expected scorers for held-out behavior probes. Do not use when designing/building Stage E training data.",
+  "expect_by_id": {
+    "greet-1": {
+      "type": "nonempty"
+    },
+    "greet-2": {
+      "type": "nonempty"
+    },
+    "id-1": {
+      "type": "contains_any",
+      "values": [
+        "PlaygroundLM",
+        "124"
+      ]
+    },
+    "id-2": {
+      "type": "contains_any",
+      "values": [
+        "PlaygroundLM",
+        "not ChatGPT",
+        "No"
+      ]
+    },
+    "fmt-1": {
+      "type": "exact_or_startswith",
+      "value": "OK"
+    },
+    "fmt-2": {
+      "type": "exact_or_startswith",
+      "value": "YES"
+    },
+    "arith-1": {
+      "type": "contains",
+      "value": "45"
+    },
+    "arith-2": {
+      "type": "contains",
+      "value": "76"
+    },
+    "arith-3": {
+      "type": "contains",
+      "value": "56"
+    },
+    "arith-4": {
+      "type": "contains",
+      "value": "132"
+    },
+    "qa-1": {
+      "type": "contains_any",
+      "values": [
+        "blue",
+        "Blue"
+      ]
+    },
+    "qa-2": {
+      "type": "contains_any",
+      "values": [
+        "red",
+        "blue",
+        "yellow",
+        "Red",
+        "Blue",
+        "Yellow"
+      ]
+    },
+    "multi-1": {
+      "type": "contains",
+      "value": "9"
+    },
+    "rep-1": {
+      "type": "nonempty"
+    }
+  }
+}
