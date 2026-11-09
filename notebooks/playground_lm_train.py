@@ -241,6 +241,8 @@ MANIFEST_CONFIG = {
     "max_session_s": MAX_SESSION_S,
     "tokens_per_step": TARGET_EFFECTIVE_BATCH * MODEL_CONFIG["context_len"],
     "world_size": WORLD_SIZE,
+    # Stage E round 3 (Claude): share of rows from Stage C pretraining replay.
+    "replay_ratio": float(os.environ.get("PLM_REPLAY_RATIO") or 0),
 }
 
 # %% [markdown]
@@ -404,7 +406,26 @@ elif SAMPLING:
     raise ValueError(f"PLM_SAMPLING must be 'permute' or unset, got {SAMPLING!r}")
 else:
     train_masks = DATA_DIR / "train.masks.bin"
-    if train_masks.is_file():
+    REPLAY_RATIO = MANIFEST_CONFIG["replay_ratio"]
+    if train_masks.is_file() and REPLAY_RATIO > 0:
+        # Round 3 (Claude): mix Stage C pretraining rows into SFT batches
+        # (replay_mix.py). PLM_REPLAY_BIN is the mounted Stage C train.bin.
+        from playground_lm.train.replay_mix import build_replay_mixed_loader
+
+        if not os.environ.get("PLM_REPLAY_BIN"):
+            raise ValueError("PLM_REPLAY_RATIO is set but PLM_REPLAY_BIN is not")
+        train_loader = build_replay_mixed_loader(
+            DATA_DIR / "train.bin",
+            train_masks,
+            Path(os.environ["PLM_REPLAY_BIN"]),
+            ratio=REPLAY_RATIO,
+            context_len=MODEL_CONFIG["context_len"],
+            batch_size=TRAIN_CONFIG["batch_size"],
+            seed_offset=start_step + RANK * 1_000_000,
+            rows_per_step=TRAIN_CONFIG["batch_size"] * grad_accum,
+        )
+        _log(f"[train] SFT masks + Stage C replay: {REPLAY_RATIO:.0%} of rows from {os.environ['PLM_REPLAY_BIN']}")
+    elif train_masks.is_file():
         train_loader = build_sft_dataloader(
             DATA_DIR / "train.bin",
             train_masks,

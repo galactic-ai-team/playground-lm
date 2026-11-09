@@ -31,3 +31,19 @@ FineWeb-Edu val loss FAILs on a rise above 0.02. HellaSwag (tolerance 1 point) a
 1. `masked_val_receipt.py` for C31101 and the candidate (G2/G7).
 2. `regression_receipt.py --baseline C31101 --candidate NAME=...` (G9).
 3. `stage_e_review_gates.py` with `--corpus` (current corpus), `--metrics`, `--sweep-run`, both receipts, the behavior reports, and `--regression-receipt`.
+
+## Round 3: hold FineWeb-Edu within the gate with replay
+
+**Goal:** every round-2 cell raised FineWeb-Edu val loss by more than the regression gate's 0.02 against C31101. Round 3 tries to stay within that gate by mixing Stage C pretraining rows into the SFT batches, at a gentle learning rate. The gate itself is unchanged: FineWeb val rise ≤ 0.02, HellaSwag drop ≤ 1 point, LAMBADA drop ≤ 1.5 points, with the noise rule above.
+
+**Grid** (`build_sweep_round3`): replay_ratio {0.25, 0.5} × peak LR 1e-5 × 1 SFT epoch, from Stage C 31101 only, optimizer reset, schedule restarting at 31101. An optional third cell, 0.5 × 3e-5, runs only if quota allows (`include_optional=True`).
+
+**What replay_ratio means:** the share of rows (1024-token windows) drawn from Stage C pretraining data (`replay_mix.py`). Each rank's optimizer step gets exactly that share (3 of 12 rows at 0.25, 6 of 12 at 0.5). Replay rows supervise every token and SFT rows only their completions, so replay's share of the loss is larger than its share of rows. "Epochs" counts passes over the SFT data, so with replay one epoch takes more updates (with round 1's corpus size: 35 at 0.25, 53 at 0.5).
+
+**Receipts per round-3 candidate:**
+- masked SFT val receipt on the leak-free round-2 val split (instruction half), for C31101 and the candidate (G2/G7);
+- regression receipt on Stage C `val.bin`, same subsets for every model (G9);
+- G6 with the run's `--sweep-run` file;
+- G5 on the round-3 training corpus.
+
+G9 still blocks without a PASS regression verdict, the frozen blind suite and Stephon's approval.
