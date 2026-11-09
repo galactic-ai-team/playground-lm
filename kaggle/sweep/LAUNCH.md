@@ -30,6 +30,8 @@ record both the SFT val and a FineWeb val to evaluate the gate.
 | SFT + masks | `galacticaiteam/plm-stage-e-data` | Round-2 version OK |
 | Stage C replay shards | `galacticaiteam/plm-stageb-data` | verified 2026-11-09 (FineWeb-style train.bin) |
 | Stage B replay shards | `galacticaiteam/plm-stageb-data` | verified 2026-11-09 (FineWeb-style train.bin) |
+**Mount path (verified 2026-11-09 via CPU probe `plm-stage-e-r3-mount-probe`):** private datasets appear under `/kaggle/input/datasets/galacticaiteam/<slug>/` (e.g. `.../plm-stageb-data/train.bin`). Short `/kaggle/input/<slug>/` may be absent; `pack_cell.DEFAULT_REPLAY_BIN` and `resolve_replay_bin()` handle the `datasets/` layout.
+
 
 ## 4. Kernel sources
 

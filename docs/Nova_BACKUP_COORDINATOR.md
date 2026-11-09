@@ -21,6 +21,16 @@ Stephon (or parent browser on his say-so) pastes this brief into Nova’s Muse c
 
 ## Current Stage E snapshot (public)
 
+- Round 3 draft PR: https://github.com/galactic-ai-team/playground-lm/pull/100 (`review/stage-e-round3`, tip `a0c1699`). Builds on #99. **CI green. Draft only — no merge.**
+- Goal: FineWeb-Edu-style replay mix (Claude online mixer primary; Nova offline mixer kept) so FineWeb val rise ≤0.02 vs C31101.
+- Replay dataset verified: `galacticaiteam/plm-stageb-data`. Mount path on Kaggle: `/kaggle/input/datasets/galacticaiteam/plm-stageb-data/train.bin`.
+- Sweep kernels prepared but **re-push blocked** by free-tier “Maximum batch GPU session count of 2” after v1 ERROR runs. Status doc: `/workspace/plm_stageE/STAGE_E_ROUND3.md` (also mirrored below when committed).
+- Baseline preserved: Stage C step **31101**, Stage D step **31104**, live demo, public ONNX on HF under `Gteam04/playground-lm-onnx`.
+- **No promotion. No private suite. Free-only compute.**
+
+## Current Stage E snapshot (public) — legacy prep note
+
+
 - Baseline preserved: Stage C step **31101**, Stage D step **31104**, live demo, public ONNX on HF under `Gteam04/playground-lm-onnx`.
 - Prep branch / draft PR publishes builder, masked trainer wiring, provenance, schema, and this brief.
 - **Full Stage E GPU train is held** until team reviews land. Free-only compute.
