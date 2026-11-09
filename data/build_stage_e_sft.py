@@ -436,9 +436,11 @@ def gen_arithmetic(n: int, seed: int) -> list[dict]:
     Round-1 used three "What is N op N?" skeletons; group-by-template then
     dumped one whole operator into val. More phrasings → more template
     buckets → val gets a meaningful held-out count closer to val_frac.
+
+    Answers are unique across the arith set so val buckets survive
+    drop_val_answer_collisions (short shared ints would otherwise wipe val).
     """
     rng = random.Random(seed + 17)
-    # Each (kind, template) becomes its own template_key via digit→N skeleton.
     phrasing = {
         "add": [
             lambda a, b: (f"What is {a} + {b}?", str(a + b)),
@@ -463,22 +465,29 @@ def gen_arithmetic(n: int, seed: int) -> list[dict]:
         ],
     }
     kinds = list(phrasing)
-    rows = []
-    for i in range(n):
+    rows: list[dict] = []
+    used_answers: set[str] = set()
+    attempts = 0
+    i = 0
+    while len(rows) < n and attempts < n * 40:
+        attempts += 1
         kind = kinds[i % len(kinds)]
         templates = phrasing[kind]
         tmpl = templates[(i // len(kinds)) % len(templates)]
         if kind == "mul":
-            a, b = rng.randint(2, 12), rng.randint(2, 12)
+            a, b = rng.randint(2, 48), rng.randint(2, 48)
         else:
-            a, b = rng.randint(0, 200), rng.randint(0, 200)
+            a, b = rng.randint(0, 4000), rng.randint(0, 4000)
             if kind == "sub" and b > a:
                 a, b = b, a
         user, ans = tmpl(a, b)
-        # Short exact answer only — no prose filler.
+        if ans in used_answers:
+            i += 1
+            continue
+        used_answers.add(ans)
         rows.append(
             {
-                "id": f"arith-{i}",
+                "id": f"arith-{len(rows)}",
                 "source": "generated-arithmetic",
                 "license": "MIT (this repository)",
                 "category": f"arithmetic-{kind}",
@@ -487,7 +496,9 @@ def gen_arithmetic(n: int, seed: int) -> list[dict]:
                 "text": format_example(user, ans),
             }
         )
+        i += 1
     return rows
+
 
 
 def gen_identity_and_follow(n: int, seed: int) -> list[dict]:
