@@ -25,6 +25,49 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# Reuse Nova's denylist loader (fail-closed). Apply to the *user* field of
+# SFT rows — Nova's corpus builder audits Instruction:/Response: `text`,
+# which does not cover this User:/Assistant: train path.
+DEFAULT_DENYLIST_PATH = ROOT / "evals" / "behavior" / "behavior_eval.prompts.frozen.json"
+NGRAM_WORDS = 13
+
+
+def _norm(text: str) -> str:
+    return " ".join(str(text or "").lower().split())
+
+
+def _word_ngrams(text: str, n: int = NGRAM_WORDS) -> set[tuple[str, ...]]:
+    words = _norm(text).split()
+    return {tuple(words[i : i + n]) for i in range(len(words) - n + 1)}
+
+
+def apply_denylist(rows: list[dict], denylist_texts: list[str]) -> tuple[list[dict], dict]:
+    """Drop rows whose user prompt exact-matches or 13-gram-overlaps denylist."""
+    deny_exact = {_norm(t) for t in denylist_texts}
+    deny_ngrams: set[tuple[str, ...]] = set()
+    for t in denylist_texts:
+        deny_ngrams |= _word_ngrams(t)
+    kept: list[dict] = []
+    report = {
+        "checked": 0,
+        "dropped_denylist_exact": 0,
+        "dropped_denylist_ngram": 0,
+        "denylist_texts": len(denylist_texts),
+    }
+    for row in rows:
+        report["checked"] += 1
+        user = row.get("user") or ""
+        if _norm(user) in deny_exact:
+            report["dropped_denylist_exact"] += 1
+            continue
+        grams = _word_ngrams(user)
+        if grams and grams & deny_ngrams:
+            report["dropped_denylist_ngram"] += 1
+            continue
+        kept.append(row)
+    return kept, report
+
+
 
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
@@ -105,7 +148,7 @@ def gen_arithmetic(n: int, seed: int) -> list[dict]:
             {
                 "id": f"arith-{i}",
                 "source": "generated-arithmetic",
-                "license": "CC0-1.0-equivalent-generated",
+                "license": "MIT (this repository)",
                 "category": f"arithmetic-{kind}",
                 "user": user,
                 "assistant": ans,
@@ -171,7 +214,7 @@ def gen_identity_and_follow(n: int, seed: int) -> list[dict]:
             {
                 "id": f"identity-{i}",
                 "source": "generated-identity",
-                "license": "CC0-1.0-equivalent-generated",
+                "license": "MIT (this repository)",
                 "category": "identity-follow",
                 "user": user,
                 "assistant": assistant,
@@ -243,6 +286,17 @@ def main():
     ap.add_argument("--arith-n", type=int, default=800)
     ap.add_argument("--identity-n", type=int, default=120)
     ap.add_argument("--val-frac", type=float, default=0.05)
+    ap.add_argument(
+        "--eval-prompts",
+        type=Path,
+        default=DEFAULT_DENYLIST_PATH,
+        help="denylist JSON (default: behavior suite frozen prompts[].user)",
+    )
+    ap.add_argument(
+        "--allow-empty-denylist",
+        action="store_true",
+        help="build even if denylist missing/malformed/empty (not for release)",
+    )
     args = ap.parse_args()
 
     import sys
@@ -269,6 +323,20 @@ def main():
         uniq.append(row)
     rows = uniq
 
+    # Fail-closed denylist (Nova schema) on the *user* field — the exact
+    # corpus that becomes train.bin / *.masks.bin (not JSONL-only path).
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / "data"))
+    from build_stage_e_corpus import load_denylist  # noqa: E402
+
+    denylist_path = Path(args.eval_prompts)
+    denylist_texts, denylist_schema = load_denylist(
+        denylist_path, required=not args.allow_empty_denylist
+    )
+    rows, deny_report = apply_denylist(rows, denylist_texts)
+    deny_report["denylist_path"] = str(denylist_path)
+    deny_report["denylist_schema"] = denylist_schema
+
     n_val = max(50, int(len(rows) * args.val_frac))
     val_rows = rows[:n_val]
     train_rows = rows[n_val:]
@@ -289,13 +357,13 @@ def main():
             },
             {
                 "id": "generated-arithmetic",
-                "license": "generated exact-label arithmetic",
-                "notes": "Programmatic Q/A with exact numeric labels; not model-generated.",
+                "license": "MIT (this repository)",
+                "notes": "Programmatic Q/A with exact numeric labels; not model-generated. License aligned with Nova corpus builder.",
             },
             {
                 "id": "generated-identity",
-                "license": "generated",
-                "notes": "Short PlaygroundLM identity and brief instruction-following examples.",
+                "license": "MIT (this repository)",
+                "notes": "Short PlaygroundLM identity and brief instruction-following examples. License aligned with Nova corpus builder.",
             },
         ],
         "format": "User:/Assistant: with <|endoftext|> after assistant; completion-only masks",
@@ -303,7 +371,9 @@ def main():
             "No Stage D playground lobby corpus",
             "No evaluation items from HellaSwag/LAMBADA",
             "No unpaid/unknown web scrapes",
+            "Frozen behavior_eval.prompts.frozen.json user prompts (denylist exact + 13-gram)",
         ],
+        "denylist_audit": deny_report,
         "train": train_meta,
         "val": val_meta,
         "counts": {

@@ -30,13 +30,14 @@ REPO_DIR = WORKING / "playground-lm"
 RUNS_DIR = WORKING / "runs"
 DATA_DIR = Path("/tmp/plm_stage_e")
 GIT_REPO = "https://github.com/galactic-ai-team/playground-lm.git"
-GIT_BRANCH = "dee/stage-e-kaggle-launcher"
+GIT_BRANCH = os.environ.get("PLM_GIT_BRANCH", "review/stage-e-sft-prep")
+GIT_COMMIT = os.environ.get("PLM_GIT_COMMIT", "").strip()  # immutable pin when set
 
 STAGE_C_SLUG = "plm-stage-c-train"
 STAGE_E_SLUG = "plm-stage-e-train"
 STAGE_C_FINAL_STEP = 31101
 
-FINETUNE_EPOCHS = float(os.environ.get("PLM_FINETUNE_EPOCHS", "2"))
+FINETUNE_EPOCHS = float(os.environ.get("PLM_FINETUNE_EPOCHS", "1"))
 DRY_RUN = os.environ.get("PLM_DRY_RUN", "0") == "1"
 MIN_DISK_GB = float(os.environ.get("PLM_MIN_DISK_GB", "8.0"))
 QUOTA_GUARD = os.environ.get("PLM_QUOTA_GUARD", "0") == "1"
@@ -293,12 +294,23 @@ def gh_token() -> str | None:
 
 def clone_repo() -> None:
     if REPO_DIR.exists():
-        subprocess.run(["git", "-C", str(REPO_DIR), "pull", "--ff-only"], check=True)
+        subprocess.run(["git", "-C", str(REPO_DIR), "fetch", "--depth", "1", "origin", GIT_COMMIT or GIT_BRANCH], check=True)
+        target = GIT_COMMIT or f"origin/{GIT_BRANCH}"
+        subprocess.run(["git", "-C", str(REPO_DIR), "checkout", "--force", target], check=True)
     else:
-        subprocess.run(
-            ["git", "clone", "--depth", "1", "--branch", GIT_BRANCH, GIT_REPO, str(REPO_DIR)],
-            check=True,
-        )
+        if GIT_COMMIT:
+            subprocess.run(
+                ["git", "clone", "--depth", "1", GIT_REPO, str(REPO_DIR)],
+                check=True,
+            )
+            subprocess.run(["git", "-C", str(REPO_DIR), "fetch", "--depth", "1", "origin", GIT_COMMIT], check=True)
+            subprocess.run(["git", "-C", str(REPO_DIR), "checkout", "--force", GIT_COMMIT], check=True)
+        else:
+            subprocess.run(
+                ["git", "clone", "--depth", "1", "--branch", GIT_BRANCH, GIT_REPO, str(REPO_DIR)],
+                check=True,
+            )
+    log(f"repo at {REPO_DIR} branch={GIT_BRANCH} commit={GIT_COMMIT or '(branch tip)'}")
 
 
 def main() -> int:
@@ -324,19 +336,34 @@ def main() -> int:
         log(f"WARN: train set ({n_train:,} tokens) is smaller than one 24-sequence batch")
 
     env = dict(os.environ)
+    ms = list(range(STAGE_C_FINAL_STEP + 10, max_steps, 10))
+    if not ms or ms[-1] != max_steps:
+        ms.append(max_steps)
+    # Conservative short-run defaults: eval every 5 (or 1 if tiny).
+    if "PLM_EVAL_INTERVAL" in os.environ:
+        eval_iv = os.environ["PLM_EVAL_INTERVAL"]
+    elif span <= 15:
+        eval_iv = "1"
+    elif span <= 80:
+        eval_iv = "5"
+    else:
+        eval_iv = "25"
     env.update({
         "PLM_STAGE": "E",                          # fixed from "D"
         "PLM_MAX_STEPS": str(max_steps),
         "PLM_WARMUP": str(max(1, min(20, span // 4))),
-        "PLM_EVAL_INTERVAL": "1" if span <= 50 else "25",
+        "PLM_EVAL_INTERVAL": eval_iv,
         "PLM_BATCH_SIZE": "6",
         "PLM_DATA_DIR": str(DATA_DIR),
         "PLM_RUN_DIR": str(RUNS_DIR),
-        "PLM_RUN_ID": "stage-e",
+        "PLM_RUN_ID": os.environ.get("PLM_RUN_ID", "stage-e-sft-candidate-ep1"),
         "PLM_REPO": "galactic-ai-team/playground-lm",
-        "PLM_RELEASE_TAG": "stage-e-checkpoints",
+        "PLM_RELEASE_TAG": "stage-e-checkpoints-candidate",
         "PLM_UPLOAD_EVERY": "1",
         "PLM_MAX_SESSION_S": str(11 * 3600),
+        "PLM_RESET_OPTIMIZER": os.environ.get("PLM_RESET_OPTIMIZER", "1"),
+        "PLM_MILESTONES": ",".join(str(x) for x in ms),
+        "PLM_CKPT_INTERVAL_S": os.environ.get("PLM_CKPT_INTERVAL_S", "60"),
     })
     token = gh_token()
     if token:

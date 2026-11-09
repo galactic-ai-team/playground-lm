@@ -1,7 +1,7 @@
 {
   "id": "galacticaiteam/plm-stage-e-train",
   "id_no": 0,
-  "title": "PLM Stage E Train",
+  "title": "PLM Stage E Train Candidate Ep1",
   "code_file": "stage_e_train.py",
   "language": "python",
   "kernel_type": "script",
@@ -10,7 +10,7 @@
   "enable_tpu": false,
   "enable_internet": true,
   "dataset_sources": [
-    "galacticaiteam/plm-stage-e-sft"
+    "galacticaiteam/plm-stage-e-data"
   ],
   "kernel_sources": [
     "galacticaiteam/plm-stage-c-train"

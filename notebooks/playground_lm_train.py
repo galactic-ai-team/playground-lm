@@ -153,6 +153,11 @@ _plan = resolve_stage_plan(
 MAX_STEPS = _plan.max_steps
 WARMUP_STEPS = _plan.warmup_steps
 SAVE_MILESTONES = _plan.milestones
+# Optional comma-separated absolute steps, e.g. PLM_MILESTONES=31111,31121,31128
+_ms = os.environ.get("PLM_MILESTONES", "").strip()
+if _ms:
+    SAVE_MILESTONES = tuple(int(x) for x in _ms.split(",") if x.strip())
+    _log(f"[train] PLM_MILESTONES override → {SAVE_MILESTONES}")
 stage = _plan.stage
 PEAK_LR = _plan.lr if _plan.lr is not None else 6e-4
 
@@ -340,6 +345,15 @@ if resumed is not None:
     )
     if start_scaler_state is not None:
         _log("[train] grad_scaler state restored")
+    if os.environ.get("PLM_RESET_OPTIMIZER", "0") == "1":
+        # Fine-tune: keep resumed weights + step counters, drop pretrain Adam moments.
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=TRAIN_CONFIG["lr"],
+            weight_decay=TRAIN_CONFIG["weight_decay"],
+            betas=(0.9, 0.95),
+        )
+        _log("[train] PLM_RESET_OPTIMIZER=1: fresh AdamW (weights/step kept, moments cleared)")
 
 # %% [markdown]
 # ## DDP wrap
