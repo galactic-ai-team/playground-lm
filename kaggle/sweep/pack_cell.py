@@ -69,6 +69,39 @@ def build_cell(slug: str, run_id: str, epochs: float, lr: float, max_steps: int)
     }
 
 
+
+def inject_sweep_env(
+    script_path: Path,
+    *,
+    epochs: float,
+    lr: float,
+    max_steps: int,
+    run_id: str,
+    git_branch: str,
+    git_commit: str,
+) -> None:
+    """Prepend immutable sweep overrides so Kaggle script kernels honor the grid.
+
+    cell.json alone is not read by stage_e_train.py; baking os.environ defaults
+    at the top is the durable bridge (Lumi glue over Dee pack_cell).
+    """
+    block = (
+        "# --- sweep cell overrides (Lumi glue; do not edit by hand) ---\n"
+        "import os as _os_sweep\n"
+        f'_os_sweep.environ.setdefault("PLM_FINETUNE_EPOCHS", "{epochs:g}")\n'
+        f'_os_sweep.environ.setdefault("PLM_LR", "{lr}")\n'
+        f'_os_sweep.environ.setdefault("PLM_MAX_STEPS", "{max_steps}")\n'
+        f'_os_sweep.environ.setdefault("PLM_RUN_ID", "{run_id}")\n'
+        f'_os_sweep.environ.setdefault("PLM_GIT_BRANCH", "{git_branch}")\n'
+        f'_os_sweep.environ.setdefault("PLM_GIT_COMMIT", "{git_commit}")\n'
+        '_os_sweep.environ.setdefault("PLM_RESET_OPTIMIZER", "1")\n'
+        '_os_sweep.environ.setdefault("PLM_QUOTA_GUARD", "1")\n'
+        '_os_sweep.environ.setdefault("PLM_EST_SESSION_H", "1.5")\n'
+        "# --- end sweep cell overrides ---\n\n"
+    )
+    script_path.write_text(block + script_path.read_text())
+
+
 def package_cell(
     template: Path,
     out_root: Path,
@@ -78,6 +111,8 @@ def package_cell(
     lr: float,
     max_steps: int,
     force: bool = False,
+    git_branch: str = "review/stage-e-round2",
+    git_commit: str = "",
 ) -> Path:
     """Create out_root/<slug>/ with the three files. Returns the cell dir."""
     validate_slug(slug)
@@ -96,6 +131,15 @@ def package_cell(
     # Copy the template launcher, renamed to "<slug>.py".
     target_script = cell_dir / f"{slug}.py"
     shutil.copy(template, target_script)
+    inject_sweep_env(
+        target_script,
+        epochs=epochs,
+        lr=lr,
+        max_steps=max_steps,
+        run_id=run_id,
+        git_branch=git_branch,
+        git_commit=git_commit,
+    )
 
     # Verify: after copy, the basename matches code_file.
     metadata = build_metadata(slug)

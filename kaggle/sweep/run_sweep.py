@@ -71,9 +71,9 @@ def build_sweep_grid(
 
 
 def _fmt_sci(x: float) -> str:
-    # 3e-5 -> "3e5"; 6e-5 -> "6e5" (dot -> nothing, minus -> nothing)
-    s = f"{x:g}"
-    return s.replace(".", "").replace("-", "")
+    # 3e-5 -> "3e5"; 1e-5 -> "1e5" (normalize exponent width)
+    s = f"{x:.0e}"  # e.g. 3e-05
+    return s.replace(".", "").replace("-0", "").replace("-", "")
 
 
 def _fmt_num(x: float) -> str:
