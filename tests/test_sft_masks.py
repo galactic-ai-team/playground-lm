@@ -36,6 +36,7 @@ def test_all_ignored_batch_returns_zero_connected_loss():
 
 def test_sft_dataloader_masks_prompt_targets(tmp_path):
     tokens = np.arange(40, dtype=np.uint16)
+    tokens[-1] = 50256  # well-formed example: the completion ends with EOT
     masks = np.zeros(40, dtype=np.uint8)
     masks[10:] = 1
     (tmp_path / "train.bin").write_bytes(tokens.tobytes())
