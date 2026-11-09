@@ -17,6 +17,8 @@ import {
   isPinnedToBottom,
   scrollToBottom,
   handleComposerKeydown,
+  requestStopGeneration,
+  handleStopHotkey,
   CONTEXT_LENGTH,
 } from './chat_state.js';
 
@@ -707,8 +709,26 @@ composer.addEventListener('submit', (event) => {
   updateComposerEnabled();
   runChatGeneration(text).catch(() => {});
 });
+const generationControl = {
+  get stopRequested() { return stopRequested; },
+  set stopRequested(v) { stopRequested = Boolean(v); },
+};
+
+function triggerStop() {
+  return requestStopGeneration(generationControl, {
+    setStatus,
+    disableStopButton: () => { btnStop.disabled = true; },
+  });
+}
+
 btnStop.addEventListener('click', () => {
-  stopRequested = true;
+  triggerStop();
+});
+document.addEventListener('keydown', (event) => {
+  handleStopHotkey(event, {
+    isGenerating,
+    onStop: () => triggerStop(),
+  });
 });
 btnNewChat.addEventListener('click', () => {
   if (isGenerating) stopRequested = true;

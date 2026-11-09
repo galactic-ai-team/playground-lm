@@ -203,3 +203,29 @@ export function handleComposerKeydown(event, { onSend, isDisabled } = {}) {
   if (typeof onSend === 'function') onSend();
   return true;
 }
+
+/**
+ * Cooperative generation abort. Sets stopRequested so the decode loop exits
+ * at the next token boundary. Does not throw or tear down the ONNX session.
+ */
+export function requestStopGeneration(state, { setStatus, disableStopButton } = {}) {
+  if (!state || typeof state !== 'object') {
+    return { stopped: false, message: null };
+  }
+  state.stopRequested = true;
+  if (typeof disableStopButton === 'function') disableStopButton();
+  const message = 'Stopping generation…';
+  if (typeof setStatus === 'function') setStatus(message, { ready: true });
+  return { stopped: true, message };
+}
+
+/**
+ * Global Escape → stop while generating. Returns true when handled.
+ */
+export function handleStopHotkey(event, { isGenerating, onStop } = {}) {
+  if (!event || event.key !== 'Escape') return false;
+  if (!isGenerating) return false;
+  if (typeof onStop === 'function') onStop();
+  return true;
+}
+
