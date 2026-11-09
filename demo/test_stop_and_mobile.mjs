@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
   requestStopGeneration,
   handleStopHotkey,
+  statusAfterGeneration,
 } from './chat_state.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -65,4 +66,21 @@ test('app.js wires Stop click and Escape to cooperative abort', () => {
   assert.match(app, /document\.addEventListener\('keydown'/);
   const chat = fs.readFileSync(path.join(__dirname, 'chat_state.js'), 'utf8');
   assert.match(chat, /Stopping generation…/);
+});
+
+test('statusAfterGeneration restores Model ready after stop finalize', () => {
+  const ready = statusAfterGeneration({ stopped: true, error: false, hasSession: true });
+  assert.equal(ready.text, 'Model ready');
+  assert.equal(ready.ready, true);
+  assert.equal(ready.error, false);
+  const err = statusAfterGeneration({ stopped: false, error: true, hasSession: true });
+  assert.equal(err.error, true);
+  assert.notEqual(err.text, 'Stopping generation…');
+});
+
+test('app.js finally clears Stopping status via statusAfterGeneration', () => {
+  const app = fs.readFileSync(path.join(__dirname, 'app.js'), 'utf8');
+  assert.match(app, /statusAfterGeneration/);
+  assert.match(app, /finally/);
+  assert.match(app, /Model ready/);
 });

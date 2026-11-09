@@ -329,9 +329,14 @@ def main() -> int:
     sys.path.insert(0, str(REPO_DIR / "src"))
     from playground_lm.train.stage_config import finetune_max_steps
 
-    max_steps = finetune_max_steps(n_train, epochs=FINETUNE_EPOCHS)
+    # Prefer sweep-injected PLM_MAX_STEPS (Round-3 replay lengthens the schedule).
+    if os.environ.get("PLM_MAX_STEPS"):
+        max_steps = int(os.environ["PLM_MAX_STEPS"])
+        log(f"max_steps {max_steps} from PLM_MAX_STEPS env (sweep pin)")
+    else:
+        max_steps = finetune_max_steps(n_train, epochs=FINETUNE_EPOCHS)
     span = max_steps - STAGE_C_FINAL_STEP
-    log(f"max_steps {max_steps} ({span} updates, ~{FINETUNE_EPOCHS:g} epochs)")
+    log(f"max_steps {max_steps} ({span} updates, ~{FINETUNE_EPOCHS:g} epochs, replay_ratio={os.environ.get('PLM_REPLAY_RATIO', '0')})")
     if n_train < 24 * 1024:
         log(f"WARN: train set ({n_train:,} tokens) is smaller than one 24-sequence batch")
 
@@ -348,10 +353,11 @@ def main() -> int:
         eval_iv = "5"
     else:
         eval_iv = "25"
+    warmup = int(os.environ["PLM_WARMUP"]) if os.environ.get("PLM_WARMUP") else max(1, min(20, span // 4))
     env.update({
         "PLM_STAGE": "E",                          # fixed from "D"
         "PLM_MAX_STEPS": str(max_steps),
-        "PLM_WARMUP": str(max(1, min(20, span // 4))),
+        "PLM_WARMUP": str(warmup),
         "PLM_EVAL_INTERVAL": eval_iv,
         "PLM_BATCH_SIZE": "6",
         "PLM_DATA_DIR": str(DATA_DIR),

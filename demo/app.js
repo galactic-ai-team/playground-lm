@@ -19,6 +19,7 @@ import {
   handleComposerKeydown,
   requestStopGeneration,
   handleStopHotkey,
+  statusAfterGeneration,
   CONTEXT_LENGTH,
 } from './chat_state.js';
 
@@ -581,6 +582,7 @@ async function runChatGeneration(userText) {
 
   isGenerating = true;
   stopRequested = false;
+  let generationError = false;
   updateComposerEnabled();
 
   chatMessages.push(createMessage('user', cleaned));
@@ -667,9 +669,18 @@ async function runChatGeneration(userText) {
   } catch (err) {
     setTextContent(assistantBubble, `Generation failed: ${err.message}`);
     assistantBubble.parentElement.classList.add('error');
+    generationError = true;
   } finally {
+    const wasStopped = stopRequested;
+    const hadError = generationError;
     isGenerating = false;
     updateComposerEnabled();
+    const finalStatus = statusAfterGeneration({
+      stopped: wasStopped,
+      error: hadError,
+      hasSession: Boolean(onnxSession),
+    });
+    setStatus(finalStatus.text, { ready: finalStatus.ready, error: finalStatus.error });
     composerInput.focus();
   }
 }
