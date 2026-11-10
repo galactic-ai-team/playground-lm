@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Package a Stage F sweep cell: <slug>.py + kernel-metadata.json + cell.json."""
+"""Package a Stage F sweep cell: <slug>.py + kernel-metadata.json + cell.json.
+
+Verified slugs (not placeholders): plm-stage-f-data, plm-e31140-seed,
+plm-stageb-data, plm-stagec-val. The slug==code_file check follows Dee.
+Do not seed E31140 from the old plm-stage-e-train kernel.
+"""
 from __future__ import annotations
 
 import argparse

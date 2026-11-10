@@ -101,3 +101,73 @@ def build_replay_mixed_loader(train_bin, train_masks, replay_bin, *, ratio: floa
     replay = build_dataloader(replay_bin, context_len=context_len, batch_size=1, shuffle=True, stride=1,
                               seed=4242, seed_offset=seed_offset)
     return ReplayMixer(sft, replay, ratio, batch_size, rows_per_step)
+
+
+# ---- Stage F: three sources (fact/arith SFT, chat SFT, FineWeb replay) ---------------
+
+def step_weights(shares: list[float], rows_per_step: int) -> list[int]:
+    """Whole rows per optimizer step for each source; raises unless exact."""
+    if abs(sum(shares) - 1.0) > 1e-9 or any(s < 0 for s in shares):
+        raise ValueError(f"shares must be non-negative and sum to 1, got {shares}")
+    weights = [check_exact(s, rows_per_step) for s in shares]
+    if sum(weights) != rows_per_step:
+        raise ValueError("shares do not split the step into whole rows")
+    return weights
+
+
+class MultiSourceMixer:
+    """Micro-batches drawing each row from one of several one-row iterators.
+
+    Rows follow a smooth weighted round-robin over each rank's optimizer step,
+    so every step (rows_per_step rows) gets exactly share x rows_per_step rows
+    from each source, spread evenly across its micro-batches. Each session
+    starts on a step boundary, so resumes keep the same pattern.
+    """
+
+    def __init__(self, sources: list[Iterator], shares: list[float], batch_size: int, rows_per_step: int):
+        if len(sources) != len(shares) or not sources:
+            raise ValueError("need one share per source")
+        if batch_size <= 0 or rows_per_step % batch_size:
+            raise ValueError("rows_per_step must be a positive multiple of batch_size")
+        self.sources = sources
+        self.weights = step_weights(shares, rows_per_step)
+        self.batch_size, self.total = batch_size, rows_per_step
+        self.current = [0] * len(sources)
+        self.served = [0] * len(sources)
+
+    def __iter__(self):
+        return self
+
+    def _pick(self) -> int:
+        for i, w in enumerate(self.weights):
+            self.current[i] += w
+        best = max(range(len(self.current)), key=lambda i: (self.current[i], -i))
+        self.current[best] -= self.total
+        return best
+
+    def __next__(self):
+        xs, ys = [], []
+        for _ in range(self.batch_size):
+            i = self._pick()
+            x, y = next(self.sources[i])
+            xs.append(x)
+            ys.append(y)
+            self.served[i] += 1
+        return _cat(xs), _cat(ys)
+
+
+def build_stage_f_mixed_loader(facts_bin, facts_masks, chat_bin, chat_masks, replay_bin, *, replay_ratio: float,
+                               chat_ratio: float, context_len: int, batch_size: int, rows_per_step: int,
+                               seed_offset: int = 0):
+    """Fact/arith SFT + chat SFT (both completion-only masks) + FineWeb replay (full loss)."""
+    from playground_lm.train.data import build_dataloader
+    from playground_lm.train.sft_data import build_sft_dataloader
+
+    facts = build_sft_dataloader(facts_bin, facts_masks, context_len=context_len, batch_size=1,
+                                 shuffle=True, seed=42, seed_offset=seed_offset)
+    chat = build_sft_dataloader(chat_bin, chat_masks, context_len=context_len, batch_size=1,
+                                shuffle=True, seed=4343, seed_offset=seed_offset)
+    replay = build_dataloader(replay_bin, context_len=context_len, batch_size=1, shuffle=True, stride=1,
+                              seed=4242, seed_offset=seed_offset)
+    shares = [1.0 - replay_ratio - chat_ratio, chat_ratio, replay_ratio]
+    return MultiSourceMixer([facts, chat, replay], shares, batch_size, rows_per_step)

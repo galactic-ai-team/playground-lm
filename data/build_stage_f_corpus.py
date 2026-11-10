@@ -173,6 +173,11 @@ def gen_word_and_twostep(n: int, seed: int) -> list[dict]:
         i += 1
     return rows
 
+def refuse_gsm8k_test_path(path: Path) -> None:
+    """Refuse a GSM8K *test* export (Nova). Train filenames may be used."""
+    if "test" in path.name.lower():
+        raise SystemExit(f"refusing GSM8K test split path: {path}")
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -192,8 +197,10 @@ def main() -> int:
     users, answers, ids = blocked_sets(base_train, base_val)
     val_answers = {g5_norm(r.get('assistant') or '') for r in base_val}
 
-    gsm8k_rows, gsm8k_report = load_gsm8k(args.gsm8k_jsonl, limit=0)
-    # limit=0 might mean all or none — check load_gsm8k
+    gsm8k_path = args.gsm8k_jsonl
+    refuse_gsm8k_test_path(gsm8k_path)
+    gsm8k_rows, gsm8k_report = load_gsm8k(gsm8k_path, limit=0)
+    # limit=0 means no cap in load_gsm8k (only stops when limit is truthy).
     print("gsm8k raw", gsm8k_report, "n", len(gsm8k_rows), flush=True)
 
     arith = gen_arithmetic(args.arith_n, args.seed)

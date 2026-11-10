@@ -75,6 +75,7 @@ def test_run_env_for_the_launcher():
         "PLM_STAGE": "E", "PLM_RUN_ID": "stage-e-r2-ep3-lr1e-5", "PLM_MAX_STEPS": str(31101 + 79),
         "PLM_WARMUP": "19", "PLM_LR": "1e-05", "PLM_SCHEDULE_START": "31101",
         "PLM_EFFECTIVE_BATCH": "24", "PLM_EVAL_INTERVAL": "5", "PLM_RESET_OPTIMIZER": "1",
+        "PLM_SEED_STEP": "31101", "PLM_SEED_SHA256": SEED_SHA256,  # added in Stage F
     }
 
 
