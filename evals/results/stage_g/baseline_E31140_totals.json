@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "kind": "stage_g_baseline_totals",
+  "model_tag": "E31140",
+  "checkpoint_sha256": "ce1fa2098236656d149437638601dfafa7744ab3f69ff52739be0c95199f818b",
+  "suite_sha256": "ccf60006f95179cd441a8b2c7ddb526b65fc4d268e72f2ca8147d20d9650aebd",
+  "retriever": "src/playground_lm/fact_retrieval.py (BM25 twin of demo/fact_retrieval.js, top-3, parity-tested)",
+  "scored_at_et": "2026-11-10 (CPU, greedy)",
+  "configs": {
+    "s1/closed-book": {
+      "scorer": "s1",
+      "max_new": 48,
+      "mode": "closed-book",
+      "fact_sheet_sha256": null,
+      "seed_base": 42,
+      "device": "cpu",
+      "n": 90,
+      "passed": 2
+    },
+    "s1/pipeline": {
+      "scorer": "s1",
+      "max_new": 48,
+      "mode": "pipeline",
+      "fact_sheet_sha256": "f6ec9c14c29d55dc50cbd4c855a6de9e9654b65c765d1449a02d039e24c2ed33",
+      "seed_base": 42,
+      "device": "cpu",
+      "n": 90,
+      "passed": 2
+    },
+    "s2/closed-book": {
+      "scorer": "s2",
+      "max_new": 256,
+      "mode": "closed-book",
+      "fact_sheet_sha256": null,
+      "seed_base": 42,
+      "device": "cpu",
+      "n": 90,
+      "passed": 2
+    },
+    "s2/pipeline": {
+      "scorer": "s2",
+      "max_new": 256,
+      "mode": "pipeline",
+      "fact_sheet_sha256": "f6ec9c14c29d55dc50cbd4c855a6de9e9654b65c765d1449a02d039e24c2ed33",
+      "seed_base": 42,
+      "device": "cpu",
+      "n": 90,
+      "passed": 2
+    }
+  },
+  "fact_sheet_only_vs_closed_book": {
+    "s1": {
+      "wins": 0,
+      "losses": 0,
+      "net": 0
+    },
+    "s2": {
+      "wins": 0,
+      "losses": 0,
+      "net": 0
+    },
+    "meets_bar": false
+  },
+  "stage_f_suite_E31140": {
+    "n": 72,
+    "passed": 2
+  },
+  "note": "Totals only. Private items, per-item results, and model outputs stay owner-only."
+}
