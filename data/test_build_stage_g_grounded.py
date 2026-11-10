@@ -137,3 +137,28 @@ def test_cli_writes_rows_and_g5_report(tmp_path):
     report = json.loads((tmp_path / "out" / "grounded_report.json").read_text())
     assert report["audit"] == "clean" and "own_val" in report["g5"] and "chat_val.jsonl" in report["g5"]
     assert (tmp_path / "out" / "train.jsonl").is_file()
+
+
+def test_cli_bare_answers_and_excluded_fact_ids(tmp_path):
+    """Lumi glue: --bare-answers drops the trailing period; --exclude-fact-ids holds facts out."""
+    import build_stage_g_grounded as gb
+    facts = fact_sheet(heldout=())
+    sheet = tmp_path / "sheet.jsonl"
+    sheet.write_text("".join(json.dumps(f) + "\n" for f in facts))
+    excl_ids = [f["id"] for f in facts[:2]]
+    excl = tmp_path / "excl.txt"
+    excl.write_text("# owner-only\n" + "\n".join(excl_ids) + "\n")
+    out = tmp_path / "out"
+    try:
+        gb.main(["--facts", str(sheet), "--out", str(out), "--bare-answers", "--exclude-fact-ids", str(excl),
+                 "--val-frac", "0"])
+    finally:
+        gb.BARE_ANSWERS = False
+    rep = json.loads((out / "grounded_report.json").read_text())
+    assert rep["facts"]["newly_held_out"] == 2 and rep["facts"]["bare_answers"] is True
+    rows = [json.loads(line) for line in (out / "train.jsonl").read_text().splitlines()]
+    assert rows
+    for r in rows:
+        assert r["answer_fact"] not in excl_ids and not set(excl_ids) & set(r["fact_ids"])
+        if r["kind"] != "not_in_facts":
+            assert not r["assistant"].endswith(".")
