@@ -194,7 +194,15 @@ class CheckpointManager:
             stem = stem[: -len("_state")]
         state_path = self.ckpt_dir / f"{stem}_state.pt"
 
-        if not weights_path.exists() or not state_path.exists():
+        if not weights_path.exists():
+            raise FileNotFoundError(f"Manifest references missing weights: {weights_path}")
+        # Stage F seeds (and any RESET/weights-only fine-tune) may ship
+        # safetensors + manifest without the ~1 GB optimizer _state.pt.
+        weights_only = (
+            os.environ.get("PLM_WEIGHTS_ONLY_RESUME", "0") == "1"
+            and not state_path.exists()
+        )
+        if not state_path.exists() and not weights_only:
             raise FileNotFoundError(
                 f"Manifest references missing files: {weights_path}, {state_path}"
             )
@@ -205,6 +213,16 @@ class CheckpointManager:
         else:
             state_dict = torch.load(str(weights_path), map_location="cpu")
         model.load_state_dict(state_dict)
+
+        if weights_only:
+            return {
+                "step": int(self._manifest.latest_step),
+                "tokens_seen": int(self._manifest.latest_tokens_seen),
+                "wall_time_s": float(self._manifest.latest_wall_time_s or 0.0),
+                "optimizer": None,
+                "torch_rng_state": None,
+                "extra": {},
+            }
 
         state = torch.load(str(state_path), map_location="cpu")
         optimizer.load_state_dict(state["optimizer"])

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "name": "F31274",
+  "checkpoint": "step_00031274.safetensors",
+  "checkpoint_sha256": "8e9f7beed5c090fbd1e306b8cbaf50e99d4e7773fcf77fe20e16d1044629a177",
+  "val_sha256": "7a4233e78b71946becfd5326e76064e7910cc03e4ba9092a3ded17676f3ac678",
+  "val_masks_sha256": "b45f4908360dc1593e410cab0c9511a3ee183765cd6697587d6da1ca62564929",
+  "windows": 35,
+  "supervised_tokens": 19212,
+  "expected_supervised_tokens": 19212,
+  "nll_sum": 54016.20520019531,
+  "token_weighted_loss": 2.8115867791065643,
+  "single_pass": true,
+  "context_len": 1024,
+  "claim_scope": "fit to the Stage E SFT val split only; not generalization or a benchmark"
+}

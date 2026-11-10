@@ -243,6 +243,9 @@ MANIFEST_CONFIG = {
     "world_size": WORLD_SIZE,
     # Stage E round 3 (Claude): share of rows from Stage C pretraining replay.
     "replay_ratio": float(os.environ.get("PLM_REPLAY_RATIO") or 0),
+    # Stage F (Claude): share of rows from the existing chat SFT, and the seed.
+    "chat_ratio": float(os.environ.get("PLM_CHAT_RATIO") or 0),
+    "seed_step": int(os.environ.get("PLM_SEED_STEP") or 0) or None,
 }
 
 # %% [markdown]
@@ -407,7 +410,32 @@ elif SAMPLING:
 else:
     train_masks = DATA_DIR / "train.masks.bin"
     REPLAY_RATIO = MANIFEST_CONFIG["replay_ratio"]
-    if train_masks.is_file() and REPLAY_RATIO > 0:
+    CHAT_RATIO = MANIFEST_CONFIG["chat_ratio"]
+    if train_masks.is_file() and CHAT_RATIO > 0:
+        # Stage F (Claude): fact/arith SFT (DATA_DIR) + chat SFT (PLM_CHAT_DIR)
+        # + FineWeb replay (PLM_REPLAY_BIN), at exact shares per optimizer step.
+        from playground_lm.train.replay_mix import build_stage_f_mixed_loader
+
+        for _var in ("PLM_CHAT_DIR", "PLM_REPLAY_BIN"):
+            if not os.environ.get(_var):
+                raise ValueError(f"PLM_CHAT_RATIO is set but {_var} is not")
+        _chat_dir = Path(os.environ["PLM_CHAT_DIR"])
+        train_loader = build_stage_f_mixed_loader(
+            DATA_DIR / "train.bin",
+            train_masks,
+            _chat_dir / "train.bin",
+            _chat_dir / "train.masks.bin",
+            Path(os.environ["PLM_REPLAY_BIN"]),
+            replay_ratio=REPLAY_RATIO,
+            chat_ratio=CHAT_RATIO,
+            context_len=MODEL_CONFIG["context_len"],
+            batch_size=TRAIN_CONFIG["batch_size"],
+            rows_per_step=TRAIN_CONFIG["batch_size"] * grad_accum,
+            seed_offset=start_step + RANK * 1_000_000,
+        )
+        _log(f"[train] Stage F mix: facts {1 - REPLAY_RATIO - CHAT_RATIO:.0%}, chat {CHAT_RATIO:.0%}, "
+             f"FineWeb replay {REPLAY_RATIO:.0%} of rows")
+    elif train_masks.is_file() and REPLAY_RATIO > 0:
         # Round 3 (Claude): mix Stage C pretraining rows into SFT batches
         # (replay_mix.py). PLM_REPLAY_BIN is the mounted Stage C train.bin.
         from playground_lm.train.replay_mix import build_replay_mixed_loader

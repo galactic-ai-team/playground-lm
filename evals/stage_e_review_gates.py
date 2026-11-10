@@ -27,7 +27,16 @@ Gates
                    overall PASS, (b) the blind suite was hash-frozen before
                    scoring, (c) G5 leakage did not FAIL in this run, and
                    (d) Stephon approved. Round 2 (Claude): (a) now checks the
-                   receipt's contents, not just that a file exists.
+                   receipt's contents, not just that a file exists. Stage F:
+                   per-checkpoint receipts (run_regression_receipt.py) can be
+                   passed with --regression-checkpoint-receipt NAME=path and
+                   are combined after checking they used identical settings.
+  G10 private-win  Stage F official bar (Stephon): on a FRESH, hash-frozen
+                   private suite, the candidate beats the incumbent (E31140,
+                   live v0.5 Chat) only if exact paired McNemar p < alpha
+                   (default 0.05) AND net cases (gained - lost) >= +5.
+                   A 1-item bump is not a win; net +5 with p >= 0.05 is
+                   not a win either. Reads an owner-only receipt; counts only.
 
 Usage
   python evals/stage_e_review_gates.py --freeze-root /workspace/plm_stageE/candidate_ep1_frozen \\
@@ -326,6 +335,49 @@ def gate_promotion(blind_receipt: dict | None, regression_receipt: dict | None, 
     return Gate("G9 promotion", BLOCK if missing else PASS, {"candidate": candidate, "missing": missing, **detail})
 
 
+# ---- G10 ------------------------------------------------------------------------------
+
+def min_clean_gains(alpha: float = 0.05) -> int:
+    """Fewest gains (with no losses) that give exact McNemar p < alpha."""
+    b = 1
+    while mcnemar_exact(b, 0) >= alpha:
+        b += 1
+    return b
+
+
+def gate_private_win(private: dict | None, candidate: str, incumbent: str = "E31140",
+                     alpha: float = 0.05, used_suites: Iterable[str] = (),
+                     min_net: int = 5) -> Gate:
+    name = "G10 private-win"
+    if not private:
+        return Gate(name, BLOCK, {"missing": ["fresh frozen private suite scored for candidate and incumbent"]})
+    suite = private.get("suite_sha256_frozen_before_scoring")
+    if not suite:
+        return Gate(name, BLOCK, {"missing": ["suite hash frozen before scoring"]})
+    if suite in set(used_suites):
+        return Gate(name, BLOCK, {"missing": ["a FRESH suite (this hash was already used)"]})
+    results = private.get("results") or {}
+    if candidate not in results or incumbent not in results:
+        return Gate(name, BLOCK, {"missing": [f"results for both {candidate} and {incumbent}"]})
+    pc = {r["id"]: bool(r["pass"]) for r in results[candidate]["rows"]}
+    pi = {r["id"]: bool(r["pass"]) for r in results[incumbent]["rows"]}
+    if set(pc) != set(pi):
+        return Gate(name, FAIL, {"error": "candidate and incumbent scored on different items"})
+    gained = sum(pc[i] and not pi[i] for i in pc)
+    lost = sum(pi[i] and not pc[i] for i in pc)
+    net = gained - lost
+    p = mcnemar_exact(gained, lost)
+    # Official Stage F bar: McNemar p < alpha AND net >= +5 (Stephon, 2026-11-09).
+    win = gained > lost and p < alpha and net >= min_net
+    return Gate(name, PASS if win else BLOCK, {
+        "candidate": candidate, "incumbent": incumbent, "n": len(pc),
+        "candidate_passed": sum(pc.values()), "incumbent_passed": sum(pi.values()),
+        "gained": gained, "lost": lost, "net": net, "mcnemar_exact_p": round(p, 4),
+        "alpha": alpha, "min_net": min_net,
+        "min_clean_gains_for_p": min_clean_gains(alpha),
+    })
+
+
 # ---- CLI --------------------------------------------------------------------------------
 
 def _pairs(values: Iterable[str]) -> dict[str, dict]:
@@ -362,8 +414,19 @@ def run(args) -> list[Gate]:
         gates.append(gate_public_dev(beh, args.baseline, args.candidate))
     blind = json.loads(Path(args.blind_receipt).read_text()) if args.blind_receipt else None
     regr = json.loads(Path(args.regression_receipt).read_text()) if args.regression_receipt else None
+    if args.regression_checkpoint_receipt:
+        from evals.regression_gate import combine_checkpoint_receipts
+
+        per = _pairs(args.regression_checkpoint_receipt)
+        base = per.pop(args.baseline, None)
+        if base is None:
+            raise SystemExit(f"--regression-checkpoint-receipt needs {args.baseline}=<C31101 receipt>")
+        regr = combine_checkpoint_receipts(base, per, args.baseline)
     leak = next((x.status for x in gates if x.name == "G5 leakage"), None)
     gates.append(gate_promotion(blind, regr, args.approved_by, args.candidate, leak))
+    private = json.loads(Path(args.private_receipt).read_text()) if args.private_receipt else None
+    gates.append(gate_private_win(private, args.candidate, args.incumbent, args.private_alpha,
+                                  args.used_suite_sha or (), args.private_min_net))
     return gates
 
 
@@ -387,11 +450,21 @@ def main(argv=None) -> int:
     p.add_argument("--schedule-start", type=int, default=31101)
     p.add_argument("--max-steps", type=int, default=31128)
     p.add_argument("--sweep-run", help="run config JSON (SweepRun.to_dict()); overrides the four LR args")
+    p.add_argument("--regression-checkpoint-receipt", action="append",
+                   help="NAME=path per-checkpoint receipt (run_regression_receipt.py); include the baseline")
+    p.add_argument("--private-receipt", help="owner-only private-suite results (G10); never commit it")
+    p.add_argument("--incumbent", default="E31140")
+    p.add_argument("--private-alpha", type=float, default=0.05)
+    p.add_argument("--private-min-net", type=int, default=5,
+                   help="official Stage F bar: require net (gained-lost) >= this many cases")
+    p.add_argument("--used-suite-sha", action="append", help="hash of an already-used private suite")
     p.add_argument("--out")
     args = p.parse_args(argv)
     gates = run(args)
+    g9 = next(g.status for g in gates if g.name == "G9 promotion")
+    g10 = next(g.status for g in gates if g.name == "G10 private-win")
     report = {"gates": [g.to_dict() for g in gates],
-              "promotion": next(g.status for g in gates if g.name == "G9 promotion")}
+              "promotion": PASS if g9 == PASS and g10 == PASS else BLOCK}
     text = json.dumps(report, indent=2)
     if args.out:
         Path(args.out).write_text(text + "\n")

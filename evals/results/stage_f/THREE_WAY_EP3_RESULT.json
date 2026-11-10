@@ -1,0 +1,191 @@
+{
+  "schema_version": 1,
+  "kind": "stage_f_three_way_ep3_result",
+  "written_at_et": "2026-11-10T00:57:00-05:00",
+  "promotion": "NONE \u2014 neither three-way ep3 candidate met the private-win bar; live remains PlaygroundLM v0.5 Chat (E31140); PR #103 kept as draft",
+  "training": {
+    "seed": "E31140",
+    "seed_sha256": "ce1fa2098236656d149437638601dfafa7744ab3f69ff52739be0c95199f818b",
+    "mixer": "Claude three-way MultiSourceMixer (facts / chat / FineWeb replay)",
+    "epochs_over_facts": 3,
+    "lr": 1e-05,
+    "git_commit_trained": "7292e89f19258433e1709b919ea870f782c5d57e",
+    "compute": "free Kaggle T4 only, max 2 concurrent, nothing paid, nothing deleted",
+    "kernels": {
+      "F31274": "https://www.kaggle.com/code/galacticaiteam/plm-stage-f-e31140-rr25-ch25-ep3-lr1e5",
+      "F31340": "https://www.kaggle.com/code/galacticaiteam/plm-stage-f-e31140-rr50-ch17-ep3-lr1e5"
+    }
+  },
+  "g5_leakage": "PASS (unchanged Stage F combined corpus; split added no examples)",
+  "fineweb_gate_vs_C31101": {
+    "settings": {
+      "benchmark_limit": 200,
+      "max_val_batches": 20,
+      "seed": 20261108,
+      "val_bin_sha256": "1fe7dffe2601324229e5742e23b58831291601d6f727c20f290b5f19a37aa9e7"
+    },
+    "C31101": {
+      "val_loss": 3.0519859433174132,
+      "delta": 0.0,
+      "HS": 0.37,
+      "LAMBADA": 0.24
+    },
+    "E31140": {
+      "val_loss": 3.0591646790504456,
+      "delta": 0.007178735733032404,
+      "HS": 0.39,
+      "LAMBADA": 0.26,
+      "verdict": "PASS"
+    },
+    "F31204": {
+      "val_loss": 3.056968295574188,
+      "delta": 0.004982352256774902,
+      "HS": 0.38,
+      "LAMBADA": 0.26,
+      "verdict": "PASS",
+      "note": "prior two-way 1-epoch"
+    },
+    "F31236": {
+      "val_loss": 3.0522205591201783,
+      "delta": 0.00023461580276507021,
+      "HS": 0.38,
+      "LAMBADA": 0.25,
+      "verdict": "PASS",
+      "note": "prior two-way 1-epoch"
+    },
+    "F31274": {
+      "val_loss": 3.0562479496002197,
+      "delta": 0.004262006282806485,
+      "HS": 0.375,
+      "LAMBADA": 0.255,
+      "verdict": "PASS",
+      "shares": "facts 50% / chat 25% / FineWeb 25%",
+      "updates": 134
+    },
+    "F31340": {
+      "val_loss": 3.0513016819953918,
+      "delta": -0.0006842613220214844,
+      "HS": 0.38,
+      "LAMBADA": 0.255,
+      "verdict": "PASS",
+      "shares": "facts 33% / chat 17% / FineWeb 50%",
+      "updates": 200
+    },
+    "note": "1000-item HS/LAMBADA not run; no qualifier"
+  },
+  "masked_sft_val_same_frozen_split": {
+    "supervised_tokens": 19212,
+    "C31101": 3.102864570625618,
+    "E31140": 2.8684885222391117,
+    "F31204": 2.8329583032414636,
+    "F31236": 2.839395580653124,
+    "F31274": 2.8115867791065643,
+    "F31340": 2.8206268253362157
+  },
+  "weights": {
+    "C31101": "4604d3a1b105cc70601352fbd83d6d61b34435b3cf09151b0562592a7b076275",
+    "D31104": "2c1adeb6d5bb7e18b45374795ee8c76ea4a7a97c70ee7d5dde9ebcfb213b4cf9",
+    "E31140": "ce1fa2098236656d149437638601dfafa7744ab3f69ff52739be0c95199f818b",
+    "F31204": "928ea6bc03e3def42822c140a82b44898e353f655b5fbfce93b3cb344ea5c94b",
+    "F31236": "a38692fdefda052c5f72cf29d13ef330958235a3a685161e1c2f90d74f5e6875",
+    "F31274": "8e9f7beed5c090fbd1e306b8cbaf50e99d4e7773fcf77fe20e16d1044629a177",
+    "F31340": "4cb036c6667305c58b7819a521d344ed827fef55dd84927f0e63973e70c708bc"
+  },
+  "tokens_seen": {
+    "E31140": 3058311168,
+    "F31274": 3061604352,
+    "F31340": 3063226368
+  },
+  "private_suite_n72": {
+    "decoding": "greedy, temperature=0, top_k=0, max_new=48, seed=202611092348+index",
+    "note": "totals and per-category totals only; item text and model outputs not published",
+    "totals": {
+      "C31101": {
+        "passed": 0,
+        "by_category": {
+          "arithmetic": "0/34",
+          "factual_short_answer": "0/26",
+          "chat_form": "0/10",
+          "uncertainty": "0/2"
+        }
+      },
+      "D31104": {
+        "passed": 0,
+        "by_category": {
+          "arithmetic": "0/34",
+          "factual_short_answer": "0/26",
+          "chat_form": "0/10",
+          "uncertainty": "0/2"
+        }
+      },
+      "E31140": {
+        "passed": 2,
+        "by_category": {
+          "arithmetic": "0/34",
+          "factual_short_answer": "0/26",
+          "chat_form": "2/10",
+          "uncertainty": "0/2"
+        }
+      },
+      "F31204": {
+        "passed": 2,
+        "by_category": {
+          "arithmetic": "0/34",
+          "factual_short_answer": "0/26",
+          "chat_form": "2/10",
+          "uncertainty": "0/2"
+        }
+      },
+      "F31236": {
+        "passed": 2,
+        "by_category": {
+          "arithmetic": "0/34",
+          "factual_short_answer": "0/26",
+          "chat_form": "2/10",
+          "uncertainty": "0/2"
+        }
+      },
+      "F31274": {
+        "passed": 2,
+        "by_category": {
+          "arithmetic": "0/34",
+          "factual_short_answer": "0/26",
+          "chat_form": "2/10",
+          "uncertainty": "0/2"
+        }
+      },
+      "F31340": {
+        "passed": 2,
+        "by_category": {
+          "arithmetic": "0/34",
+          "factual_short_answer": "0/26",
+          "chat_form": "2/10",
+          "uncertainty": "0/2"
+        }
+      }
+    },
+    "paired_vs_E31140": {
+      "F31274": {
+        "gained": 0,
+        "lost": 0,
+        "net": 0,
+        "mcnemar_exact_two_sided_p": 1.0,
+        "bar_met": false
+      },
+      "F31340": {
+        "gained": 0,
+        "lost": 0,
+        "net": 0,
+        "mcnemar_exact_two_sided_p": 1.0,
+        "bar_met": false
+      }
+    }
+  },
+  "bar": {
+    "fineweb_rise_vs_C31101": "<= +0.02",
+    "g5": "not FAIL",
+    "private_vs_E31140": "exact McNemar p<0.05 AND net (gained-lost) >= +5",
+    "finalist": "1000-item HS/LAMBADA must not be clearly worse than E31140",
+    "applied": "unchanged; no candidate qualified; nothing promoted"
+  }
+}

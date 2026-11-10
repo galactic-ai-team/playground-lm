@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "name": "F31340",
+  "checkpoint": "step_00031340.safetensors",
+  "checkpoint_sha256": "4cb036c6667305c58b7819a521d344ed827fef55dd84927f0e63973e70c708bc",
+  "val_sha256": "7a4233e78b71946becfd5326e76064e7910cc03e4ba9092a3ded17676f3ac678",
+  "val_masks_sha256": "b45f4908360dc1593e410cab0c9511a3ee183765cd6697587d6da1ca62564929",
+  "windows": 35,
+  "supervised_tokens": 19212,
+  "expected_supervised_tokens": 19212,
+  "nll_sum": 54189.882568359375,
+  "token_weighted_loss": 2.8206268253362157,
+  "single_pass": true,
+  "context_len": 1024,
+  "claim_scope": "fit to the Stage E SFT val split only; not generalization or a benchmark"
+}

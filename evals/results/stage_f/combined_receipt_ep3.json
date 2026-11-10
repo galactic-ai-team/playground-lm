@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "kind": "stage_e_regression",
+  "baseline": "C31101",
+  "eval": {
+    "fineweb_val_sha256": "1fe7dffe2601324229e5742e23b58831291601d6f727c20f290b5f19a37aa9e7",
+    "val_max_batches": 20,
+    "hellaswag_limit": 200,
+    "lambada_limit": 200,
+    "seed": 20261108
+  },
+  "models": {
+    "C31101": {
+      "weights": "step_00031101.safetensors",
+      "weights_sha256": "4604d3a1b105cc70601352fbd83d6d61b34435b3cf09151b0562592a7b076275",
+      "fineweb": {
+        "loss": 3.0519859433174132,
+        "tokens_scored": 81920
+      },
+      "hellaswag": {
+        "accuracy": 0.37,
+        "examples": 200
+      },
+      "lambada": {
+        "last_word_accuracy": 0.24,
+        "examples": 200
+      }
+    },
+    "E31140": {
+      "weights": "step_00031140.safetensors",
+      "weights_sha256": "ce1fa2098236656d149437638601dfafa7744ab3f69ff52739be0c95199f818b",
+      "fineweb": {
+        "loss": 3.0591646790504456,
+        "tokens_scored": 81920
+      },
+      "hellaswag": {
+        "accuracy": 0.39,
+        "examples": 200
+      },
+      "lambada": {
+        "last_word_accuracy": 0.26,
+        "examples": 200
+      }
+    },
+    "F31204": {
+      "weights": "step_00031204.safetensors",
+      "weights_sha256": "928ea6bc03e3def42822c140a82b44898e353f655b5fbfce93b3cb344ea5c94b",
+      "fineweb": {
+        "loss": 3.056968295574188,
+        "tokens_scored": 81920
+      },
+      "hellaswag": {
+        "accuracy": 0.38,
+        "examples": 200
+      },
+      "lambada": {
+        "last_word_accuracy": 0.26,
+        "examples": 200
+      }
+    },
+    "F31236": {
+      "weights": "step_00031236.safetensors",
+      "weights_sha256": "a38692fdefda052c5f72cf29d13ef330958235a3a685161e1c2f90d74f5e6875",
+      "fineweb": {
+        "loss": 3.0522205591201783,
+        "tokens_scored": 81920
+      },
+      "hellaswag": {
+        "accuracy": 0.38,
+        "examples": 200
+      },
+      "lambada": {
+        "last_word_accuracy": 0.25,
+        "examples": 200
+      }
+    },
+    "F31274": {
+      "weights": "step_00031274.safetensors",
+      "weights_sha256": "8e9f7beed5c090fbd1e306b8cbaf50e99d4e7773fcf77fe20e16d1044629a177",
+      "fineweb": {
+        "loss": 3.0562479496002197,
+        "tokens_scored": 81920
+      },
+      "hellaswag": {
+        "accuracy": 0.375,
+        "examples": 200
+      },
+      "lambada": {
+        "last_word_accuracy": 0.255,
+        "examples": 200
+      }
+    },
+    "F31340": {
+      "weights": "step_00031340.safetensors",
+      "weights_sha256": "4cb036c6667305c58b7819a521d344ed827fef55dd84927f0e63973e70c708bc",
+      "fineweb": {
+        "loss": 3.0513016819953918,
+        "tokens_scored": 81920
+      },
+      "hellaswag": {
+        "accuracy": 0.38,
+        "examples": 200
+      },
+      "lambada": {
+        "last_word_accuracy": 0.255,
+        "examples": 200
+      }
+    }
+  },
+  "source": "combined from per-checkpoint run_regression_receipt.py receipts"
+}

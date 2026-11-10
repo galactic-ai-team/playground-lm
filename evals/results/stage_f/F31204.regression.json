@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "receipt_type": "regression_receipt",
+  "suite_type": "public_general_ability_only",
+  "timestamp_utc": "2026-11-10T05:09:39+00:00",
+  "checkpoint": {
+    "path": "step_00031204.safetensors",
+    "sha256": "928ea6bc03e3def42822c140a82b44898e353f655b5fbfce93b3cb344ea5c94b",
+    "config_sha256": "169590422d732d8dbbc60c6de07099af78af1bacfcbbff982b8be4fd50259294"
+  },
+  "datasets": {
+    "validation": {
+      "name": "FineWeb-Edu (local held-out val.bin)",
+      "sha256": "1fe7dffe2601324229e5742e23b58831291601d6f727c20f290b5f19a37aa9e7",
+      "path": "val.bin"
+    },
+    "hellaswag": "Rowan/hellaswag:validation",
+    "lambada": "EleutherAI/lambada_openai:default:test"
+  },
+  "settings": {
+    "context_len": 1024,
+    "batch_size": 4,
+    "benchmark_limit": 200,
+    "max_val_batches": 20,
+    "seed": 20261108,
+    "device": "cpu",
+    "offline": true,
+    "scoring": "existing evals.run_eval + evals.benchmarks"
+  },
+  "metrics": {
+    "val_loss": 3.056968295574188,
+    "perplexity": 21.262996226872986,
+    "hellaswag_acc_norm": 0.38,
+    "lambada_acc": 0.26
+  },
+  "coverage": {
+    "validation": {
+      "tokens_scored": 81920,
+      "available_targets": 3594909,
+      "complete": false
+    },
+    "hellaswag": {
+      "examples": 200,
+      "correct": 76,
+      "complete": false
+    },
+    "lambada": {
+      "examples": 200,
+      "correct": 52,
+      "complete": false
+    }
+  },
+  "complete": false,
+  "publishable": false,
+  "repeat_check": {
+    "performed": false,
+    "absolute_metric_deltas": null
+  },
+  "limitations": "Public aggregate regression metrics only; subset results are not comparable to full benchmark scores. Do not infer private held-out performance or promote a model from this receipt alone."
+}

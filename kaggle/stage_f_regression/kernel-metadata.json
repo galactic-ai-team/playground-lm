@@ -1,0 +1,15 @@
+{
+  "id": "galacticaiteam/plm-stage-f-regression",
+  "title": "PlaygroundLM Stage F Public Regression Receipts",
+  "code_file": "stage_f_regression.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "dataset_sources": [],
+  "kernel_sources": [],
+  "competition_sources": [],
+  "model_sources": []
+}

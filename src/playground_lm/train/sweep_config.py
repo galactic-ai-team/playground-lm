@@ -22,6 +22,13 @@ epoch) and varies the share of rows replayed from Stage C pretraining data
 (replay_mix.py): replay_ratio {0.25, 0.5}, plus an optional 0.5 x 3e-5 cell.
 "epochs" always counts passes over the SFT data: with replay, fewer rows per
 update are SFT rows, so the same epoch takes more updates.
+
+Stage F (build_sweep_stage_f): facts + simple math. Seeds are named
+(SEEDS): E31140 (live v0.5 Chat) for the main cells, C31101 as a control.
+Each update's rows are split three ways: new fact/arith SFT, existing
+leak-free chat SFT (chat_ratio), and Stage C FineWeb replay (replay_ratio).
+"epochs" then counts passes over the fact/arith data; chat and replay rows
+are sampled at their shares. The schedule restarts at the seed's step.
 """
 
 from __future__ import annotations
@@ -37,6 +44,13 @@ from playground_lm.train.stage_config import STAGE_C_FINAL_STEP, finetune_max_st
 SEED_STEP = STAGE_C_FINAL_STEP  # 31101
 SEED_SHA256 = "4604d3a1b105cc70601352fbd83d6d61b34435b3cf09151b0562592a7b076275"
 LIVE_STAGE_D_STEP = 31104  # never a seed, never overwritten
+
+# Named seeds: (step, weights sha256). E31140 is live v0.5 Chat (Stage E round 3,
+# rr50 @ 1e-5); C31101 is the Stage C base every regression gate compares against.
+SEEDS = {
+    "C31101": (SEED_STEP, SEED_SHA256),
+    "E31140": (31140, "ce1fa2098236656d149437638601dfafa7744ab3f69ff52739be0c95199f818b"),
+}
 
 DEFAULT_EPOCHS = (1.0, 3.0)
 DEFAULT_PEAK_LRS = (3e-5, 1e-5)
@@ -55,6 +69,8 @@ class SweepRun:
     schedule_start: int = SEED_STEP
     eval_interval: int = 5
     replay_ratio: float = 0.0  # share of rows from Stage C pretraining replay (round 3)
+    chat_ratio: float = 0.0    # share of rows from existing chat SFT (Stage F)
+    seed: str = "C31101"       # key into SEEDS
 
     @property
     def updates(self) -> int:
@@ -74,30 +90,42 @@ def _lr_tag(lr: float) -> str:
     return f"{lr:.0e}".replace("e-0", "e-")
 
 
+def _whole_rows(share: float, effective_batch: int, what: str) -> int:
+    rows = effective_batch * share
+    if abs(rows - round(rows)) > 1e-9:
+        raise ValueError(f"{what} {share} x batch {effective_batch} is not a whole number of rows")
+    return int(round(rows))
+
+
 def make_run(train_tokens: int, epochs: float, peak_lr: float, *, prefix: str = "stage-e-r2",
              effective_batch: int = 24, context_len: int = 1024, warmup: int | None = None,
-             eval_interval: int = 5, replay_ratio: float = 0.0) -> SweepRun:
+             eval_interval: int = 5, replay_ratio: float = 0.0, chat_ratio: float = 0.0,
+             seed: str = "C31101") -> SweepRun:
     if peak_lr <= 0 or not math.isfinite(peak_lr):
         raise ValueError("peak_lr must be positive")
-    if not 0.0 <= replay_ratio < 1.0:
-        raise ValueError("replay_ratio must be in [0, 1)")
-    replay_rows = effective_batch * replay_ratio
-    if abs(replay_rows - round(replay_rows)) > 1e-9:
-        raise ValueError(f"replay_ratio {replay_ratio} x batch {effective_batch} is not a whole number of rows")
-    sft_rows = effective_batch - int(round(replay_rows))  # SFT rows per update set the epoch length
-    max_steps = finetune_max_steps(train_tokens, sft_rows, context_len, epochs, SEED_STEP)
-    updates = max_steps - SEED_STEP
+    if seed not in SEEDS:
+        raise ValueError(f"unknown seed {seed!r}; expected one of {sorted(SEEDS)}")
+    if replay_ratio < 0 or chat_ratio < 0 or replay_ratio + chat_ratio >= 1.0:
+        raise ValueError("replay_ratio and chat_ratio must be >= 0 and leave room for the trained SFT rows")
+    replay_rows = _whole_rows(replay_ratio, effective_batch, "replay_ratio")
+    chat_rows = _whole_rows(chat_ratio, effective_batch, "chat_ratio")
+    sft_rows = effective_batch - replay_rows - chat_rows  # these rows set the epoch length
+    seed_step = SEEDS[seed][0]
+    max_steps = finetune_max_steps(train_tokens, sft_rows, context_len, epochs, seed_step)
+    updates = max_steps - seed_step
     warm = default_warmup(updates) if warmup is None else warmup
     if not 1 <= warm < updates:
         raise ValueError(f"warmup {warm} must be in [1, {updates})")
     epochs_tag = f"{epochs:g}".replace(".", "p")
     replay_tag = f"-rr{round(replay_ratio * 100):02d}" if replay_ratio else ""
+    chat_tag = f"-ch{round(chat_ratio * 100):02d}" if chat_ratio else ""
     return SweepRun(
-        run_id=f"{prefix}{replay_tag}-ep{epochs_tag}-lr{_lr_tag(peak_lr)}",
+        run_id=f"{prefix}{replay_tag}{chat_tag}-ep{epochs_tag}-lr{_lr_tag(peak_lr)}",
         epochs=float(epochs), peak_lr=float(peak_lr), warmup=warm,
         train_tokens=int(train_tokens), max_steps=max_steps,
         effective_batch=effective_batch, context_len=context_len, eval_interval=eval_interval,
-        replay_ratio=float(replay_ratio),
+        replay_ratio=float(replay_ratio), chat_ratio=float(chat_ratio), seed=seed,
+        schedule_start=seed_step,
     )
 
 
@@ -121,6 +149,28 @@ def build_sweep_round3(train_tokens: int, replay_ratios=ROUND3_REPLAY_RATIOS, pe
     if include_optional and ROUND3_OPTIONAL_CELL not in cells:
         cells.append(ROUND3_OPTIONAL_CELL)
     runs = [make_run(train_tokens, epochs, lr, prefix="stage-e-r3", replay_ratio=r, **kw) for r, lr in cells]
+    if len({r.run_id for r in runs}) != len(runs):
+        raise ValueError("duplicate run ids in sweep")
+    return runs
+
+
+# Stage F cells: (seed, replay_ratio, chat_ratio). Rows per 24-row update are
+# facts/chat/replay = 8/4/12 for the rr50 cells and 12/6/6 for rr25; per rank
+# (12 rows a step) that is 4/2/6 and 6/3/3, all whole numbers.
+STAGE_F_PEAK_LR = 1e-5
+STAGE_F_CELLS = (
+    ("E31140", 0.50, 1 / 6),  # primary: most replay, given E31140's ~0.013 FineWeb headroom
+    ("E31140", 0.25, 0.25),   # second: more fact rows, less replay
+)
+STAGE_F_CONTROL = ("C31101", 0.50, 1 / 6)  # optional control from the Stage C base
+
+
+def build_sweep_stage_f(fact_tokens: int, *, include_control: bool = False, peak_lr: float = STAGE_F_PEAK_LR,
+                        epochs: float = 1.0, **kw) -> list[SweepRun]:
+    """Stage F: facts + simple math. `fact_tokens` is the new fact/arith SFT train set's token count."""
+    cells = list(STAGE_F_CELLS) + ([STAGE_F_CONTROL] if include_control else [])
+    runs = [make_run(fact_tokens, epochs, peak_lr, prefix=f"stage-f-{seed.lower()}", seed=seed,
+                     replay_ratio=rr, chat_ratio=ch, **kw) for seed, rr, ch in cells]
     if len({r.run_id for r in runs}) != len(runs):
         raise ValueError("duplicate run ids in sweep")
     return runs
@@ -151,19 +201,27 @@ def run_env(run: SweepRun) -> dict[str, str]:
         "PLM_EFFECTIVE_BATCH": str(run.effective_batch),
         "PLM_EVAL_INTERVAL": str(run.eval_interval),
         "PLM_RESET_OPTIMIZER": "1",
+        # Which checkpoint to start from; the launcher must verify the sha256.
+        "PLM_SEED_STEP": str(SEEDS[run.seed][0]),
+        "PLM_SEED_SHA256": SEEDS[run.seed][1],
         # Round 3: share of rows from Stage C replay. Dee mounts the Stage C
         # train.bin and sets PLM_REPLAY_BIN; with ratio 0 the key is omitted.
         **({"PLM_REPLAY_RATIO": repr(run.replay_ratio)} if run.replay_ratio else {}),
+        # Stage F: share of rows from the existing chat SFT (PLM_CHAT_DIR holds
+        # its train.bin + train.masks.bin); omitted when 0.
+        **({"PLM_CHAT_RATIO": repr(run.chat_ratio)} if run.chat_ratio else {}),
     }
 
 
-def verify_seed(weights_path: str | os.PathLike) -> str:
-    """Raise unless the file is the Stage C 31101 seed (by sha256)."""
+def verify_seed(weights_path: str | os.PathLike, seed: str = "C31101") -> str:
+    """Raise unless the file is the named seed (by sha256)."""
+    step, want = SEEDS[seed]
     h = hashlib.sha256()
     with open(weights_path, "rb") as f:
         for block in iter(lambda: f.read(1 << 20), b""):
             h.update(block)
     digest = h.hexdigest()
-    if digest != SEED_SHA256:
-        raise ValueError(f"{Path(weights_path).name} is not the Stage C {SEED_STEP} seed (sha256 {digest[:12]}...)")
+    if digest != want:
+        label = "Stage C 31101" if seed == "C31101" else seed
+        raise ValueError(f"{Path(weights_path).name} is not the {label} seed (sha256 {digest[:12]}...)")
     return digest

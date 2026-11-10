@@ -273,3 +273,34 @@ def test_resume_after_prune_uses_newest(run_dir):
     state = ckpt.resume(model2, opt2)
     assert state is not None
     assert state["step"] == 5
+
+
+def test_weights_only_resume_loads_weights_when_state_missing(run_dir, monkeypatch):
+    """PLM_WEIGHTS_ONLY_RESUME=1 allows a seed that has safetensors but no _state.pt."""
+    model, opt = _make_model_and_opt()
+    _train_step(model, opt, seed=7)
+    ckpt = CheckpointManager(run_dir, run_id="test", config=CONFIG)
+    ckpt.save(model, opt, step=31140, tokens_seen=3058311168, wall_time_s=1.5)
+    state_files = list(run_dir.rglob("*_state.pt"))
+    assert state_files, "expected a state file from save()"
+    for pth in state_files:
+        pth.unlink()
+
+    model_fail, opt_fail = _make_model_and_opt()
+    monkeypatch.delenv("PLM_WEIGHTS_ONLY_RESUME", raising=False)
+    try:
+        ckpt.resume(model_fail, opt_fail)
+        raised = False
+    except FileNotFoundError:
+        raised = True
+    assert raised, "missing _state.pt must still fail without the env flag"
+
+    model2, opt2 = _make_model_and_opt()
+    x = torch.randn(2, 16)
+    orig = model(x)
+    monkeypatch.setenv("PLM_WEIGHTS_ONLY_RESUME", "1")
+    resumed = ckpt.resume(model2, opt2)
+    assert resumed is not None
+    assert resumed["step"] == 31140
+    assert resumed["tokens_seen"] == 3058311168
+    assert torch.allclose(model2(x), orig)

@@ -89,3 +89,51 @@ def verdict(receipt: dict, candidate: str, tolerances: dict | None = None) -> di
 
     out["status"] = max((m["status"] for m in out["metrics"].values()), key=ORDER.get)
     return out
+
+
+# ---- per-checkpoint receipts (evals/run_regression_receipt.py) -------------------------
+
+_SAME_SETTINGS = ("context_len", "batch_size", "benchmark_limit", "max_val_batches", "seed")
+
+
+def combine_checkpoint_receipts(baseline: dict, candidates: dict[str, dict], baseline_name: str = "C") -> dict:
+    """Build the combined receipt `verdict` reads from the per-checkpoint
+    receipts the team actually produces (run_regression_receipt.py, one file
+    per checkpoint). Raises if the files weren't scored on identical data and
+    settings, since the gate is only meaningful on the same subsets."""
+    receipts = {baseline_name: baseline, **candidates}
+    for name, r in receipts.items():
+        if r.get("receipt_type") != "regression_receipt":
+            raise ValueError(f"{name}: not a regression_receipt")
+    ref = baseline
+    for name, r in candidates.items():
+        diffs = [k for k in _SAME_SETTINGS if r["settings"].get(k) != ref["settings"].get(k)]
+        if r["datasets"]["validation"]["sha256"] != ref["datasets"]["validation"]["sha256"]:
+            diffs.append("validation val.bin sha256")
+        if diffs:
+            raise ValueError(f"{name}: scored with different settings than {baseline_name}: {diffs}")
+
+    def model(r: dict) -> dict:
+        m, cov = r["metrics"], r["coverage"]
+        return {"weights": Path_name(r["checkpoint"]["path"]), "weights_sha256": r["checkpoint"]["sha256"],
+                "fineweb": {"loss": m["val_loss"], "tokens_scored": cov["validation"]["tokens_scored"]},
+                "hellaswag": {"accuracy": m["hellaswag_acc_norm"], "examples": cov["hellaswag"]["examples"]},
+                "lambada": {"last_word_accuracy": m["lambada_acc"], "examples": cov["lambada"]["examples"]}}
+
+    s = ref["settings"]
+    return {"schema_version": 1, "kind": "stage_e_regression", "baseline": baseline_name,
+            "eval": {"fineweb_val_sha256": ref["datasets"]["validation"]["sha256"],
+                     "val_max_batches": s.get("max_val_batches"), "hellaswag_limit": s.get("benchmark_limit"),
+                     "lambada_limit": s.get("benchmark_limit"), "seed": s.get("seed")},
+            "models": {name: model(r) for name, r in receipts.items()},
+            "source": "combined from per-checkpoint run_regression_receipt.py receipts"}
+
+
+def Path_name(path: str) -> str:
+    return str(path).replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def min_detectable_drop(accuracy: float, examples: int) -> float:
+    """Smallest accuracy drop the noise rule can FAIL at this sample size
+    (1.96 x SE of a difference between two equal-size samples)."""
+    return 1.96 * math.sqrt(2 * accuracy * (1 - accuracy) / examples)
