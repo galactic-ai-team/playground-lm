@@ -76,8 +76,9 @@ def facts_prompt(texts: list[str], question: str) -> str:
     return f"Facts: {listed} Question: {normalize_space(question)}"
 
 
-def load_facts(path: Path) -> tuple[list[dict], dict]:
-    facts, report = [], {"entries": 0, "skipped_no_questions": 0, "skipped_invalid": 0}
+def load_facts(path: Path, auto_questions: bool = False) -> tuple[list[dict], dict]:
+    facts, report = [], {"entries": 0, "skipped_no_questions": 0, "skipped_invalid": 0,
+                         "auto_questions": 0}
     seen = set()
     for line in Path(path).read_text(encoding="utf-8").splitlines():
         if not line.strip():
@@ -89,6 +90,12 @@ def load_facts(path: Path) -> tuple[list[dict], dict]:
             report["skipped_invalid"] += 1
             continue
         seen.add(f["id"])
+        if not f.get("questions") and auto_questions:
+            # Lumi glue: rule-based phrasings (data/facts/fact_questions.py), opt-in.
+            sys.path.insert(0, str(Path(__file__).resolve().parent / "facts"))
+            from fact_questions import questions_for  # noqa: E402
+            f["questions"] = questions_for(f)
+            report["auto_questions"] += bool(f["questions"])
         if not f.get("questions"):
             report["skipped_no_questions"] += 1
             f["questions"] = []
@@ -221,9 +228,11 @@ def main(argv=None) -> None:
     p.add_argument("--closed-book", type=float, default=0.10)
     p.add_argument("--g5-val", type=Path, action="append", help="val JSONL to run the G5 leakage report against")
     p.add_argument("--tokenize", action="store_true", help="also write .bin/.masks.bin (needs tiktoken)")
+    p.add_argument("--auto-questions", action="store_true",
+                   help="fill missing `questions` with rule-based phrasings (data/facts/fact_questions.py)")
     args = p.parse_args(argv)
 
-    facts, load_report = load_facts(args.facts)
+    facts, load_report = load_facts(args.facts, auto_questions=args.auto_questions)
     built = build(facts, seed=args.seed, val_frac=args.val_frac,
                   not_in_facts_frac=args.not_in_facts, closed_book_frac=args.closed_book)
     problems = audit_rows(built["train"], facts) + audit_rows(built.get("val", []), facts)
