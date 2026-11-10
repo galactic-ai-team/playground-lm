@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "kind": "stage_g_private_suite_freeze_receipt",
+  "note": "Public receipt: hashes and counts only. The suite itself is owner-only and never committed.",
+  "status": "FROZEN_FINAL_STAGE_G_90",
+  "frozen_at": "2026-11-10T09:10:40-05:00",
+  "author": "GPT-6",
+  "sha256": {
+    "freeze.json": "ccf60006f95179cd441a8b2c7ddb526b65fc4d268e72f2ca8147d20d9650aebd",
+    "prompts.frozen.json": "02b6ac81c242ffba269db93ef1e18b6df10adc7864dbb9db7aa81ebfc9cff120",
+    "expect.frozen.json": "4a9091ae4016532cb240859ad302152706836cac62c704dad346f6d14201a4d6",
+    "exclude_keys.txt": "2553a970c32d71502c7534daac763350d5cc711ffb6a25cce4464d057aebdc5c"
+  },
+  "fact_sheet_sha256": "f6ec9c14c29d55dc50cbd4c855a6de9e9654b65c765d1449a02d039e24c2ed33",
+  "counts": {
+    "total": 90,
+    "arithmetic": 36,
+    "fact_sheet": 30,
+    "chat_form": 14,
+    "uncertainty": 10,
+    "fact_sheet_answerable": 20,
+    "fact_sheet_answerable_heldout": 12
+  },
+  "selftests": "PASS (ids unique; prompt/expect ids+categories match; cross-hashes match; all score_type exact; answerable facts exist in sheet with matching heldout flags; integer arithmetic keys; partial_v0 items preserved verbatim)",
+  "training_data_hashes": {
+    "facts_train.bin": "763713c0cd4f746ed7d3b5c3f66eec9040dc5a241ec47ee6d4379b0aef75d810",
+    "grounded_train.bin": "545d9435843e11de67688bde42d8d489dd7412e3db6fc9ba6ac5372f6483a722",
+    "chat_train.bin": "df82ada620ca8cf70f2d14a5adebd0c090d3bc1c7b5ee502416453f22a410677",
+    "kaggle_dataset": "galacticaiteam/plm-stage-g-data"
+  },
+  "g5_vs_stage_g_suite": {
+    "scratchpad_v2": {
+      "exact_user": 0,
+      "exact_assistant": 0,
+      "ngram13_hits": 0
+    },
+    "grounded_v3": {
+      "exact_user": 0,
+      "exact_assistant": 23,
+      "ngram13_hits": 0
+    },
+    "chat": {
+      "exact_user": 0,
+      "exact_assistant": 0,
+      "ngram13_hits": 0
+    }
+  },
+  "g5_verdict": "PASS (exact_user 0 everywhere; 13-gram 0). WARN exact_assistant 23 in grounded: 20 are the fixed uncertainty reply by design, 3 short answers coincide with other facts' answers.",
+  "suite_source_facts_in_training": 0,
+  "scratch_rows_matching_excluded_keys": 0,
+  "g5_vs_stage_f_suite": "PASS (all counts 0)"
+}
