@@ -51,6 +51,15 @@ def cell_env(run, *, suite_sha: str, git_commit: str, milestones: str,
     return env
 
 
+def insert_block(code: str, block: str) -> str:
+    """Place overrides after any `from __future__` import (must stay first)."""
+    lines = code.splitlines(keepends=True)
+    last = max((i for i, l in enumerate(lines) if l.startswith("from __future__ import")), default=-1)
+    if last < 0:
+        return block + code
+    return "".join(lines[: last + 1]) + "\n" + block + "".join(lines[last + 1 :])
+
+
 def package(run, slug: str, out_root: Path, template: Path, **kw) -> Path:
     cell_dir = out_root / slug
     if cell_dir.exists():
@@ -60,7 +69,7 @@ def package(run, slug: str, out_root: Path, template: Path, **kw) -> Path:
     block = "# --- Stage G cell overrides ---\nimport os as _os_cell\n" + "".join(
         f"_os_cell.environ[{k!r}] = {v!r}\n" for k, v in sorted(env.items())
     ) + "# --- end overrides ---\n\n"
-    (cell_dir / f"{slug}.py").write_text(block + template.read_text())
+    (cell_dir / f"{slug}.py").write_text(insert_block(template.read_text(), block))
     meta = {
         "id": f"galacticaiteam/{slug}", "title": slug.replace("-", " ").title(),
         "code_file": f"{slug}.py", "language": "python", "kernel_type": "script",

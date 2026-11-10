@@ -23,7 +23,9 @@ def test_pack_g1_g2(tmp_path):
         assert float(env["PLM_GROUNDED_RATIO"]) > 0 and float(env["PLM_CHAT_RATIO"]) > 0
         assert env["PLM_MILESTONES"].split(",")[-1] == env["PLM_MAX_STEPS"]
         code = (tmp_path / name / f"{name}.py").read_text()
-        assert code.startswith("# --- Stage G cell overrides ---") and "def require_frozen_suite" in code
+        assert "# --- Stage G cell overrides ---" in code and "def require_frozen_suite" in code
+        compile(code, name, "exec")  # __future__ import must still come first
+        assert code.index("from __future__") < code.index("# --- Stage G cell overrides ---")
 
 
 def test_rejects_bad_hashes(tmp_path):
