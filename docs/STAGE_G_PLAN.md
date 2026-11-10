@@ -55,6 +55,8 @@ Prefer the model doing the work. The demo may show a separate chip **"Calculator
 
 ### Numbers
 
+> **Measured Nov 10 (~9 AM ET):** see `docs/STAGE_G_350M_ESTIMATE.md`. G-full 24×1024 ran 9.4k tok/s at micro-batch 3 (≈8.3k real-training, ≈30M tokens/session-hour); G-depth 24×768 14.1k (≈12.4k real). The verdict below holds: from scratch ~96 h for 2.86B tokens; grown 1.0–1.5B ≈ 34–50 h.
+
 | Item | Value | Basis |
 |---|---|---|
 | Measured 124M speed | **~22k tokens/s** on Kaggle T4 ×2 (DDP, fp16 AMP, micro-batch 6 × accum 8, 98,304 tok/step, 4.46 s/step) | Stage B/C logs (Nov 3) |
