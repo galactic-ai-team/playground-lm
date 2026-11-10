@@ -17,7 +17,7 @@ export const DEFAULT_STAGE_C_MILESTONES = [
   { step: 19366, shortLabel: 's2 end', description: 'Stage C s2 end / s3 start (step 19,366)' },
   { step: 31101, shortLabel: 's3 end', description: 'Stage C pretraining end (step 31,101)' },
   { step: 31104, shortLabel: 'Stage D', description: 'Stage D Playground SFT (step 31,104 · val 3.181)', isStageD: true },
-  { step: 31140, shortLabel: 'Stage E', description: 'Stage E Round 3 replay SFT (step 31,140 · subset FineWeb 3.059)', isStageE: true },
+  { step: 31140, shortLabel: 'Stage E', description: 'v0.5 Chat / Stage E Round 3 replay SFT (step 31,140 · subset FineWeb 3.059)', isStageE: true },
 ];
 
 export function computeEmaSeries(values, weight = 0.9) {

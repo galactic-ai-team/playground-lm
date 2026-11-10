@@ -1,7 +1,7 @@
 # PlaygroundLM — Model Card
 
 ## Model Overview
-- **Model Name:** `PlaygroundLM` (GPT-2-Small 124M Architecture Class)
+- **Model Name:** `PlaygroundLM` (GPT-2-Small 124M Architecture Class). Live demo name: **PlaygroundLM v0.5 Chat**.
 - **Developers:** Galactic AI Team (Claude, Gemini, GPT-6, Dee, Nova, Lumi)
 - **Repository:** `https://github.com/galactic-ai-team/playground-lm`
 - **Architecture:** From-scratch decoder-only causal Transformer (12 layers, 12 attention heads, $d_{\text{model}} = 768$, context length 1024, tied BPE token embeddings, ~124M parameters).
@@ -38,7 +38,9 @@ All `PlaygroundLM` metrics below are marked **TBD** until the Kaggle pretraining
 - **Intended Use:** Research and educational inspection of from-scratch language model pretraining, domain adaptation on multi-agent dialogue, and client-side WebGPU/WASM inference via ONNX Runtime Web.
 - **Limitations:** As a compact ~124M parameter model trained on a compute budget, `PlaygroundLM` is not suited for factual retrieval, safety-critical reasoning, or production deployment without downstream guardrails.
 
-## Stage E Round 3 (live demo — step 31,140)
+## PlaygroundLM v0.5 Chat — Stage E Round 3 (live demo — step 31,140)
+
+Friendly name **v0.5 Chat** (Stephon, 11:24 PM ET Nov 9). Same weights as before — only the display name changed.
 
 Promoted 2026-11-09 (Stephon): `r3-rr50-ep1-lr1e5` — 50% FineWeb-Edu Stage B replay + Playground SFT, lr 1e-5, seed Stage C 31,101.
 Weights SHA256 `ce1fa2098236656d149437638601dfafa7744ab3f69ff52739be0c95199f818b`.

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { bytesToUnicode, createGPT2Tokenizer, GPT2_EOT_ID } from './gpt2_bpe.js';
 import {
   CONTEXT_LENGTH,
+  MAX_PROMPT_TURNS,
   createMessage,
   formatChatPrompt,
   trimMessagesToBudget,
@@ -168,6 +169,25 @@ test('trimMessagesToBudget drops oldest turns, enforces budget, and preserves Us
   assert.equal(packedOversized.inputIds.length, budget);
   assert.deepEqual(packedOversized.inputIds.slice(0, 3), [12982, 25, 220]); // "User: "
   assert.deepEqual(packedOversized.inputIds.slice(-3), [198, 48902, 25]); // "\nAssistant:"
+});
+
+test('trimMessagesToBudget maxTurns keeps only the newest user turns', () => {
+  const tokenizer = buildStageEBpeFixture();
+  const many = [];
+  for (let i = 0; i < 5; i += 1) {
+    many.push(createMessage('user', `Q${i}`));
+    many.push(createMessage('assistant', `A${i}`));
+  }
+  many.push(createMessage('user', 'Latest'));
+  const packed = trimMessagesToBudget(many, (t) => tokenizer.encode(t), {
+    contextLength: 1024,
+    reserveNewTokens: 16,
+    maxTurns: MAX_PROMPT_TURNS,
+  });
+  const users = packed.messages.filter((m) => m.role === 'user').map((m) => m.content);
+  assert.deepEqual(users, ['Q3', 'Q4', 'Latest']);
+  assert.equal(packed.truncated, true);
+  assert.equal(MAX_PROMPT_TURNS, 3);
 });
 
 test('Safe DOM helpers and handleComposerKeydown preserve existing behavior', () => {
