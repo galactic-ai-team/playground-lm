@@ -1,7 +1,9 @@
 # kaggle/stage_f_train/stage_f_train.py
 # Stage F: fact/arith SFT continuation from Stage E step 31140 (v0.5 Chat).
 # Seeds from the plm-e31140-seed dataset (weights + manifest, no optimizer state).
-# SFT data: plm-stage-f-data. Replay: plm-stageb-data. Free T4 only.
+# SFT data: plm-stage-f-data (facts/ + chat/ streams for the three-way mixer;
+# combined train.bin remains at the dataset root). Replay: plm-stageb-data.
+# Free T4 only.
 #
 # Contract (from data/stage_e/SCHEMA.md):
 #   PLM_DATA_DIR holds {train,val}.bin (uint16 tokens) and
@@ -31,6 +33,7 @@ INPUT = Path("/kaggle/input")
 REPO_DIR = WORKING / "playground-lm"
 RUNS_DIR = WORKING / "runs"
 DATA_DIR = Path("/tmp/plm_stage_e")
+CHAT_DIR = Path("/tmp/plm_stage_f_chat")
 GIT_REPO = "https://github.com/galactic-ai-team/playground-lm.git"
 GIT_BRANCH = os.environ.get("PLM_GIT_BRANCH", "feat/stage-f-facts-arith")
 GIT_COMMIT = os.environ.get("PLM_GIT_COMMIT", "").strip()  # immutable pin when set
@@ -87,6 +90,52 @@ def find_mount(slug: str) -> Path | None:
         if root.is_dir():
             return root
     return None
+
+
+def find_stage_f_root() -> Path:
+    """Dataset root that contains val.bin (and optionally facts/ and chat/)."""
+    found = find_mount(STAGE_F_DATA_SLUG)
+    candidates = []
+    if found:
+        candidates.append(found)
+    candidates.extend([
+        INPUT / "datasets" / "galacticaiteam" / STAGE_F_DATA_SLUG,
+        INPUT / STAGE_F_DATA_SLUG,
+    ])
+    for root in candidates:
+        if (root / "val.bin").is_file():
+            return root
+    raise FileNotFoundError(f"{STAGE_F_DATA_SLUG} root with val.bin not found")
+
+
+def _stage_pair(src_bin: Path, src_mask: Path, dest_dir: Path, stem: str = "train") -> None:
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_bin, dest_mask = dest_dir / f"{stem}.bin", dest_dir / f"{stem}.masks.bin"
+    shutil.copy(src_bin, dest_bin)
+    shutil.copy(src_mask, dest_mask)
+    n = token_count(dest_bin)
+    if dest_mask.stat().st_size != n:
+        raise ValueError(f"{dest_mask}: {dest_mask.stat().st_size} masks vs {n} tokens")
+    log(f"staged {src_bin} -> {dest_bin} ({n:,} tokens / masks aligned)")
+
+
+def stage_three_way_data() -> int:
+    """Facts train into DATA_DIR, chat train into CHAT_DIR, frozen val at DATA_DIR."""
+    root = find_stage_f_root()
+    facts, chat = root / "facts", root / "chat"
+    if not (facts / "train.bin").is_file() or not (facts / "train.masks.bin").is_file():
+        raise SystemExit(f"PLM_CHAT_RATIO set but facts stream missing under {facts}")
+    if not (chat / "train.bin").is_file() or not (chat / "train.masks.bin").is_file():
+        raise SystemExit(f"PLM_CHAT_RATIO set but chat stream missing under {chat}")
+    val_bin, val_mask = root / "val.bin", root / "val.masks.bin"
+    if not val_bin.is_file() or not val_mask.is_file():
+        raise SystemExit(f"frozen val missing under {root}")
+    _stage_pair(facts / "train.bin", facts / "train.masks.bin", DATA_DIR, "train")
+    _stage_pair(val_bin, val_mask, DATA_DIR, "val")
+    _stage_pair(chat / "train.bin", chat / "train.masks.bin", CHAT_DIR, "train")
+    os.environ["PLM_CHAT_DIR"] = str(CHAT_DIR)
+    log(f"three-way mix: facts {DATA_DIR}, chat {CHAT_DIR}, val from {root}")
+    return token_count(DATA_DIR / "train.bin")
 
 
 def _resolve_pair(dir_hint: Path) -> tuple[Path, Path, Path, Path]:
@@ -156,7 +205,13 @@ def token_count(path: Path, context_len: int = 1024) -> int:
 
 def stage_data() -> int:
     """Copy the paired train/val bins+masks into DATA_DIR and verify masks
-    align with tokens byte-for-byte. Returns train token count."""
+    align with tokens byte-for-byte. Returns train token count.
+
+    When PLM_CHAT_RATIO is set, DATA_DIR gets the facts stream (plus frozen
+    val) and CHAT_DIR gets the chat stream for the three-way mixer.
+    """
+    if float(os.environ.get("PLM_CHAT_RATIO") or 0) > 0:
+        return stage_three_way_data()
     train_bin, train_mask, val_bin, val_mask = resolve_finetune_files()
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     for src in (train_bin, train_mask, val_bin, val_mask):
@@ -408,7 +463,9 @@ def resolve_replay_bin() -> str | None:
     prefer = ("plm-stageb-data", "plm-stage-c", "stageb", "stage-c", "fineweb")
     hits = list(root.rglob("train.bin")) if root.is_dir() else []
     # Exclude Stage E SFT paired finetune bins from replay candidates.
-    hits = [h for h in hits if "finetune" not in str(h).lower()]
+    hits = [h for h in hits if "finetune" not in str(h).lower()
+            and "plm-stage-f-data" not in str(h).lower()
+            and "plm-stage-e-data" not in str(h).lower()]
     log(f"train.bin candidates: {[str(h) for h in hits[:12]]}")
     if not hits:
         return None  # do not return a missing env path
@@ -447,7 +504,9 @@ def main() -> int:
         max_steps = finetune_max_steps(n_train, epochs=FINETUNE_EPOCHS)
     seed_step = STAGE_F_SEED_STEP
     span = max_steps - seed_step
-    log(f"max_steps {max_steps} ({span} updates, ~{FINETUNE_EPOCHS:g} epochs, replay_ratio={os.environ.get('PLM_REPLAY_RATIO', '0')})")
+    log(f"max_steps {max_steps} ({span} updates, ~{FINETUNE_EPOCHS:g} epochs, "
+        f"replay_ratio={os.environ.get('PLM_REPLAY_RATIO', '0')}, "
+        f"chat_ratio={os.environ.get('PLM_CHAT_RATIO', '0')})")
     if n_train < 24 * 1024:
         log(f"WARN: train set ({n_train:,} tokens) is smaller than one 24-sequence batch")
 
@@ -480,6 +539,8 @@ def main() -> int:
         "PLM_BATCH_SIZE": "6",
         "PLM_SCHEDULE_START": os.environ.get("PLM_SCHEDULE_START", str(seed_step)),
         "PLM_DATA_DIR": str(DATA_DIR),
+        "PLM_CHAT_DIR": os.environ.get("PLM_CHAT_DIR", ""),
+        "PLM_CHAT_RATIO": os.environ.get("PLM_CHAT_RATIO", ""),
         "PLM_RUN_DIR": str(RUNS_DIR),
         "PLM_RUN_ID": os.environ.get("PLM_RUN_ID", "stage-f-sft"),
         "PLM_REPO": "galactic-ai-team/playground-lm",

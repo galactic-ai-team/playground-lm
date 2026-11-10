@@ -40,6 +40,7 @@ def package_cell(
     replay_ratio: float,
     git_commit: str,
     seed_step: int = SEED_STEP,
+    chat_ratio: float = 0.0,
     force: bool = False,
 ) -> Path:
     validate_slug(slug)
@@ -52,6 +53,8 @@ def package_cell(
 
     updates = max_steps - seed_step
     warmup = max(1, min(20, updates // 4))
+    if chat_ratio < 0 or replay_ratio + chat_ratio >= 1.0:
+        raise ValueError("replay_ratio and chat_ratio must leave room for fact rows")
     cell = {
         "slug": slug,
         "run_id": run_id,
@@ -59,15 +62,23 @@ def package_cell(
         "lr": lr,
         "max_steps": max_steps,
         "replay_ratio": replay_ratio,
+        "chat_ratio": chat_ratio,
         "git_commit": git_commit,
         "seed_step": seed_step,
         "warmup": warmup,
     }
+    chat_lines = ""
+    if chat_ratio:
+        chat_lines = (
+            f'_os_sweep.environ["PLM_CHAT_RATIO"] = "{chat_ratio}"\n'
+            '_os_sweep.environ["PLM_CHAT_DIR"] = "/tmp/plm_stage_f_chat"\n'
+        )
     block = (
         "# --- sweep cell overrides (Stage F) ---\n"
         "import os as _os_sweep\n"
         f'_os_sweep.environ["PLM_REPLAY_RATIO"] = "{replay_ratio}"\n'
         f'_os_sweep.environ["PLM_REPLAY_BIN"] = "{DEFAULT_REPLAY_BIN}"\n'
+        + chat_lines +
         f'_os_sweep.environ["PLM_LR"] = "{lr}"\n'
         f'_os_sweep.environ["PLM_FINETUNE_EPOCHS"] = "{epochs}"\n'
         f'_os_sweep.environ["PLM_MAX_STEPS"] = "{max_steps}"\n'
@@ -116,6 +127,7 @@ def main(argv=None) -> int:
     p.add_argument("--lr", type=float, required=True)
     p.add_argument("--max-steps", type=int, required=True)
     p.add_argument("--replay-ratio", type=float, required=True)
+    p.add_argument("--chat-ratio", type=float, default=0.0)
     p.add_argument("--git-commit", required=True)
     p.add_argument("--seed-step", type=int, default=SEED_STEP)
     p.add_argument("--force", action="store_true")
@@ -127,7 +139,7 @@ def main(argv=None) -> int:
         cell = package_cell(
             args.template, args.out_root, args.slug, args.run_id,
             args.epochs, args.lr, args.max_steps, args.replay_ratio,
-            args.git_commit, args.seed_step, args.force,
+            args.git_commit, args.seed_step, args.chat_ratio, args.force,
         )
     except (ValueError, FileExistsError, FileNotFoundError, RuntimeError) as e:
         print(f"[pack_stage_f] ERROR: {e}", file=sys.stderr)

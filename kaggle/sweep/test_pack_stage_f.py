@@ -40,3 +40,21 @@ def test_pack_stage_f_slug_equals_code_file(tmp_path):
     src = (cell / meta["code_file"]).read_text()
     assert "PLM_WEIGHTS_ONLY_RESUME" in src
     assert "PLM_SCHEDULE_START" in src
+
+
+def test_pack_injects_chat_ratio(tmp_path):
+    template = tmp_path / "template.py"
+    template.write_text("print('ok')\n")
+    cell = mod.package_cell(
+        template, tmp_path / "cells",
+        slug="plm-stage-f-e31140-rr50-ch17-ep3-lr1e5",
+        run_id="stage-f-e31140-rr50-ch17-ep3-lr1e-5",
+        epochs=3, lr=1e-5, max_steps=31340,
+        replay_ratio=0.50, chat_ratio=1/6,
+        git_commit="a" * 40,
+    )
+    src = (cell / "plm-stage-f-e31140-rr50-ch17-ep3-lr1e5.py").read_text()
+    assert "PLM_CHAT_RATIO" in src
+    assert "PLM_CHAT_DIR" in src
+    meta = json.loads((cell / "cell.json").read_text())
+    assert abs(meta["chat_ratio"] - 1/6) < 1e-9
