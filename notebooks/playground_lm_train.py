@@ -245,6 +245,9 @@ MANIFEST_CONFIG = {
     "replay_ratio": float(os.environ.get("PLM_REPLAY_RATIO") or 0),
     # Stage F (Claude): share of rows from the existing chat SFT, and the seed.
     "chat_ratio": float(os.environ.get("PLM_CHAT_RATIO") or 0),
+    # Stage G (Claude): grounded-facts share and the optional answer-token loss weight (1.0 = off).
+    "grounded_ratio": float(os.environ.get("PLM_GROUNDED_RATIO") or 0),
+    "answer_loss_weight": float(os.environ.get("PLM_ANSWER_LOSS_WEIGHT") or 1.0),
     "seed_step": int(os.environ.get("PLM_SEED_STEP") or 0) or None,
 }
 
@@ -411,7 +414,33 @@ else:
     train_masks = DATA_DIR / "train.masks.bin"
     REPLAY_RATIO = MANIFEST_CONFIG["replay_ratio"]
     CHAT_RATIO = MANIFEST_CONFIG["chat_ratio"]
-    if train_masks.is_file() and CHAT_RATIO > 0:
+    GROUNDED_RATIO = MANIFEST_CONFIG["grounded_ratio"]
+    if train_masks.is_file() and GROUNDED_RATIO > 0:
+        # Stage G (Claude): scratchpad SFT (DATA_DIR) + grounded facts (PLM_GROUNDED_DIR)
+        # + chat SFT (PLM_CHAT_DIR) + FineWeb replay (PLM_REPLAY_BIN), exact rows per step.
+        from playground_lm.train.replay_mix import build_stage_g_mixed_loader
+
+        for _var in ("PLM_GROUNDED_DIR", "PLM_CHAT_DIR", "PLM_REPLAY_BIN"):
+            if not os.environ.get(_var):
+                raise ValueError(f"PLM_GROUNDED_RATIO is set but {_var} is not")
+        _g_dir, _c_dir = Path(os.environ["PLM_GROUNDED_DIR"]), Path(os.environ["PLM_CHAT_DIR"])
+        _weight = MANIFEST_CONFIG["answer_loss_weight"]
+        train_loader = build_stage_g_mixed_loader(
+            DATA_DIR / "train.bin", train_masks,
+            _g_dir / "train.bin", _g_dir / "train.masks.bin",
+            _c_dir / "train.bin", _c_dir / "train.masks.bin",
+            Path(os.environ["PLM_REPLAY_BIN"]),
+            grounded_ratio=GROUNDED_RATIO, chat_ratio=CHAT_RATIO, replay_ratio=REPLAY_RATIO,
+            context_len=MODEL_CONFIG["context_len"], batch_size=TRAIN_CONFIG["batch_size"],
+            rows_per_step=TRAIN_CONFIG["batch_size"] * grad_accum,
+            seed_offset=start_step + RANK * 1_000_000,
+            answer_weight=_weight,
+            answer_marker=tuple(get_tokenizer().encode(" Answer:")) if _weight != 1.0 else None,
+        )
+        _log(f"[train] Stage G mix: scratch {1 - GROUNDED_RATIO - CHAT_RATIO - REPLAY_RATIO:.0%}, grounded "
+             f"{GROUNDED_RATIO:.0%}, chat {CHAT_RATIO:.0%}, FineWeb replay {REPLAY_RATIO:.0%} of rows; "
+             f"answer-token loss weight {_weight:g}")
+    elif train_masks.is_file() and CHAT_RATIO > 0:
         # Stage F (Claude): fact/arith SFT (DATA_DIR) + chat SFT (PLM_CHAT_DIR)
         # + FineWeb replay (PLM_REPLAY_BIN), at exact shares per optimizer step.
         from playground_lm.train.replay_mix import build_stage_f_mixed_loader

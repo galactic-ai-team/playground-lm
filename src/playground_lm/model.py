@@ -32,7 +32,12 @@ def _cross_entropy_sum(logits, targets):
     )
 
 
-def chunked_cross_entropy(logits, targets, chunk_tokens=LOSS_CHUNK_TOKENS):
+def _weighted_cross_entropy_sum(logits, targets, weights):
+    ce = F.cross_entropy(logits.float(), targets, reduction="none", ignore_index=IGNORE_INDEX)
+    return (ce * weights).sum()
+
+
+def chunked_cross_entropy(logits, targets, chunk_tokens=LOSS_CHUNK_TOKENS, weights=None):
     """Mean cross-entropy over supervised positions, computed in row chunks.
 
     The plain `F.cross_entropy(logits.float(), ...)` materialises an FP32
@@ -47,6 +52,8 @@ def chunked_cross_entropy(logits, targets, chunk_tokens=LOSS_CHUNK_TOKENS):
     Targets equal to IGNORE_INDEX (-100) are excluded from the mean, which
     enables completion-only SFT without changing the pretraining path.
     """
+    if weights is not None:
+        return _weighted_chunked_cross_entropy(logits, targets, weights, chunk_tokens)
     flat_logits = logits.reshape(-1, logits.size(-1))
     flat_targets = targets.reshape(-1)
     # Tensor ops only (no .item() / Python if on counts) so torch.compile(fullgraph=True) works.
@@ -64,6 +71,28 @@ def chunked_cross_entropy(logits, targets, chunk_tokens=LOSS_CHUNK_TOKENS):
         total = total + part
     # Fully-ignored batch: clamp keeps a connected zero (sum of ignored CE is 0).
     return total / count.clamp(min=1).to(total.dtype)
+
+
+def _weighted_chunked_cross_entropy(logits, targets, weights, chunk_tokens):
+    """Stage G answer-token weighting (Claude): sum(w * CE) / sum(w) over
+    supervised targets, chunked and checkpointed like the plain loss. Only
+    used when a loader yields weights; weight 1.0 never reaches here, so the
+    default loss is untouched."""
+    flat_logits = logits.reshape(-1, logits.size(-1))
+    flat_targets = targets.reshape(-1)
+    flat_weights = weights.reshape(-1).to(torch.float32)
+    denom = torch.where(flat_targets != IGNORE_INDEX, flat_weights, torch.zeros_like(flat_weights)).sum()
+    use_checkpoint = torch.is_grad_enabled() and flat_logits.requires_grad
+    total = flat_logits.new_zeros((), dtype=torch.float32)
+    for start in range(0, flat_targets.numel(), chunk_tokens):
+        rows = slice(start, start + chunk_tokens)
+        args = (flat_logits[rows], flat_targets[rows], flat_weights[rows])
+        if use_checkpoint:
+            part = checkpoint(_weighted_cross_entropy_sum, *args, use_reentrant=False)
+        else:
+            part = _weighted_cross_entropy_sum(*args)
+        total = total + part
+    return total / denom.clamp(min=1e-12)
 
 
 def _save_tied_weight(module, state_dict, prefix, local_metadata):
@@ -173,7 +202,7 @@ class PlaygroundLM(nn.Module):
             nn.init.ones_(module.weight)
             nn.init.zeros_(module.bias)
 
-    def forward(self, x, y=None):
+    def forward(self, x, y=None, loss_weights=None):
         if x.ndim != 2 or not 0 < x.shape[1] <= self.context_len:
             raise ValueError("x must have shape (batch, T), 1 <= T <= context_len")
         if y is not None and y.shape != x.shape:
@@ -189,7 +218,9 @@ class PlaygroundLM(nn.Module):
         if y is not None:
             # FP32 cross-entropy, chunked so it never holds a full FP32 copy
             # of the B x T x vocab logits (see chunked_cross_entropy).
-            loss = chunked_cross_entropy(logits, y, LOSS_CHUNK_TOKENS)
+            # loss_weights (Stage G, optional): per-target weights; None keeps
+            # the plain mean exactly.
+            loss = chunked_cross_entropy(logits, y, LOSS_CHUNK_TOKENS, weights=loss_weights)
         return logits, loss
 
     def num_params(self, non_embedding=True):

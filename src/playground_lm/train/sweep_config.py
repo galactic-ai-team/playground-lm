@@ -71,6 +71,8 @@ class SweepRun:
     replay_ratio: float = 0.0  # share of rows from Stage C pretraining replay (round 3)
     chat_ratio: float = 0.0    # share of rows from existing chat SFT (Stage F)
     seed: str = "C31101"       # key into SEEDS
+    grounded_ratio: float = 0.0  # share of rows from grounded-facts SFT (Stage G)
+    micro_batch: int | None = None  # per-GPU rows per forward pass, when a stage needs a specific one
 
     @property
     def updates(self) -> int:
@@ -100,16 +102,18 @@ def _whole_rows(share: float, effective_batch: int, what: str) -> int:
 def make_run(train_tokens: int, epochs: float, peak_lr: float, *, prefix: str = "stage-e-r2",
              effective_batch: int = 24, context_len: int = 1024, warmup: int | None = None,
              eval_interval: int = 5, replay_ratio: float = 0.0, chat_ratio: float = 0.0,
-             seed: str = "C31101") -> SweepRun:
+             seed: str = "C31101", grounded_ratio: float = 0.0, micro_batch: int | None = None) -> SweepRun:
     if peak_lr <= 0 or not math.isfinite(peak_lr):
         raise ValueError("peak_lr must be positive")
     if seed not in SEEDS:
         raise ValueError(f"unknown seed {seed!r}; expected one of {sorted(SEEDS)}")
-    if replay_ratio < 0 or chat_ratio < 0 or replay_ratio + chat_ratio >= 1.0:
-        raise ValueError("replay_ratio and chat_ratio must be >= 0 and leave room for the trained SFT rows")
+    if min(replay_ratio, chat_ratio, grounded_ratio) < 0 or replay_ratio + chat_ratio + grounded_ratio >= 1.0:
+        raise ValueError("replay, chat and grounded ratios must be >= 0 and leave room for the trained SFT rows")
     replay_rows = _whole_rows(replay_ratio, effective_batch, "replay_ratio")
     chat_rows = _whole_rows(chat_ratio, effective_batch, "chat_ratio")
-    sft_rows = effective_batch - replay_rows - chat_rows  # these rows set the epoch length
+    grounded_rows = _whole_rows(grounded_ratio, effective_batch, "grounded_ratio")
+    # The remaining rows are the primary SFT source; they set the epoch length.
+    sft_rows = effective_batch - replay_rows - chat_rows - grounded_rows
     seed_step = SEEDS[seed][0]
     max_steps = finetune_max_steps(train_tokens, sft_rows, context_len, epochs, seed_step)
     updates = max_steps - seed_step
@@ -119,13 +123,14 @@ def make_run(train_tokens: int, epochs: float, peak_lr: float, *, prefix: str = 
     epochs_tag = f"{epochs:g}".replace(".", "p")
     replay_tag = f"-rr{round(replay_ratio * 100):02d}" if replay_ratio else ""
     chat_tag = f"-ch{round(chat_ratio * 100):02d}" if chat_ratio else ""
+    grounded_tag = f"-gf{round(grounded_ratio * 100):02d}" if grounded_ratio else ""
     return SweepRun(
-        run_id=f"{prefix}{replay_tag}{chat_tag}-ep{epochs_tag}-lr{_lr_tag(peak_lr)}",
+        run_id=f"{prefix}{replay_tag}{chat_tag}{grounded_tag}-ep{epochs_tag}-lr{_lr_tag(peak_lr)}",
         epochs=float(epochs), peak_lr=float(peak_lr), warmup=warm,
         train_tokens=int(train_tokens), max_steps=max_steps,
         effective_batch=effective_batch, context_len=context_len, eval_interval=eval_interval,
         replay_ratio=float(replay_ratio), chat_ratio=float(chat_ratio), seed=seed,
-        schedule_start=seed_step,
+        schedule_start=seed_step, grounded_ratio=float(grounded_ratio), micro_batch=micro_batch,
     )
 
 
@@ -176,6 +181,52 @@ def build_sweep_stage_f(fact_tokens: int, *, include_control: bool = False, peak
     return runs
 
 
+# Stage G: four sources -- scratchpad arithmetic SFT (primary; sets the epoch
+# length), grounded-facts SFT, chat SFT, FineWeb replay. Shares are the
+# packet's draft grid, exactly. They need 40-row updates to be whole rows
+# (25/15/10/50 of 40 = 10/6/4/20; 35/20/10/35 = 14/8/4/14); per rank on
+# 2 x T4 that's 20 rows = micro-batch 5 x 4 accumulation (5/3/2/10 and
+# 7/4/2/7 per rank), and it stays whole on 1 GPU (40 per rank).
+STAGE_G_BATCH = 40
+STAGE_G_MICRO = 5
+STAGE_G_CELLS = (
+    # (cell, scratch, grounded, chat, replay, peak_lr)
+    ("g1", 0.25, 0.15, 0.10, 0.50, 1e-5),
+    ("g2", 0.25, 0.15, 0.10, 0.50, 3e-5),
+)
+STAGE_G_OPTIONAL = ("g3", 0.35, 0.20, 0.10, 0.35, 1e-5)
+STAGE_G_SCRATCH_EPOCHS = 2.0
+
+
+def build_sweep_stage_g(token_counts: dict[str, int], *, include_optional: bool = False,
+                        epochs: float = STAGE_G_SCRATCH_EPOCHS, seed: str = "E31140", **kw) -> list[SweepRun]:
+    """Stage G: <= 3 runs from E31140. token_counts: train tokens per source
+    ("scratch" required; "grounded" and "chat" optional, used only to report
+    how many passes each source gets)."""
+    if "scratch" not in token_counts:
+        raise ValueError("token_counts needs the scratchpad train token count under 'scratch'")
+    cells = list(STAGE_G_CELLS) + ([STAGE_G_OPTIONAL] if include_optional else [])
+    effective_batch = kw.pop("effective_batch", STAGE_G_BATCH)
+    runs = []
+    for _cell, scratch, grounded, chat, replay, lr in cells:
+        if abs(scratch + grounded + chat + replay - 1.0) > 1e-9:
+            raise ValueError("Stage G shares must sum to 1")
+        runs.append(make_run(token_counts["scratch"], epochs, lr, prefix=f"stage-g-{seed.lower()}", seed=seed,
+                             replay_ratio=replay, chat_ratio=chat, grounded_ratio=grounded,
+                             effective_batch=effective_batch, micro_batch=STAGE_G_MICRO, **kw))
+    if len({r.run_id for r in runs}) != len(runs):
+        raise ValueError("duplicate run ids in sweep")
+    return runs
+
+
+def source_passes(run: SweepRun, token_counts: dict[str, int]) -> dict[str, float]:
+    """How many passes over each SFT source a run makes (rows x context per update)."""
+    shares = {"scratch": 1 - run.replay_ratio - run.chat_ratio - run.grounded_ratio,
+              "grounded": run.grounded_ratio, "chat": run.chat_ratio}
+    return {k: round(run.updates * run.effective_batch * shares[k] * run.context_len / token_counts[k], 2)
+            for k in shares if token_counts.get(k)}
+
+
 def expected_lr(run: SweepRun | dict, step: int) -> float:
     """LR the loop sets for update `step` (same formula as train/loop.py,
     on steps counted from the schedule start)."""
@@ -210,6 +261,10 @@ def run_env(run: SweepRun) -> dict[str, str]:
         # Stage F: share of rows from the existing chat SFT (PLM_CHAT_DIR holds
         # its train.bin + train.masks.bin); omitted when 0.
         **({"PLM_CHAT_RATIO": repr(run.chat_ratio)} if run.chat_ratio else {}),
+        # Stage G: share of rows from grounded-facts SFT (PLM_GROUNDED_DIR) and
+        # the per-GPU micro-batch that keeps every source's rows whole.
+        **({"PLM_GROUNDED_RATIO": repr(run.grounded_ratio)} if run.grounded_ratio else {}),
+        **({"PLM_BATCH_SIZE": str(run.micro_batch)} if run.micro_batch else {}),
     }
 
 

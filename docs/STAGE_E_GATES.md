@@ -70,3 +70,23 @@ The CLI's overall `promotion` is PASS only when both G9 and G10 pass.
 Each rank's optimizer step gets exact whole rows from each source (4/2/6 or 6/3/3 of 12). Fact/arith and chat rows keep completion-only masks; replay rows use full loss. The chat share keeps v0.5 Chat's behaviour from fading while it learns the new facts.
 
 **Regression subsets:** reuse the round-3 knobs (`max_val_batches=20`, `benchmark_limit=200`, seed 20261108, the same Stage C `val.bin`) for every model so the comparison stays like for like. `--regression-checkpoint-receipt NAME=path` combines the per-checkpoint receipts and refuses mismatched settings. **Caveat:** at 200 examples the noise rule can only FAIL HellaSwag or LAMBADA drops of about 9 to 10 points, so in practice those two metrics can only WARN. Use `benchmark_limit=200` for every sweep candidate. For a final promotion candidate only, rerun C31101, E31140 and the finalist on the same set with `benchmark_limit=1000` (detectable drop about 4 points). That changes the sample size, not the thresholds, and still needs Stephon's go-ahead before any promotion.
+
+## Stage G: step-by-step math + fact sheet (Claude's lane)
+
+**Gates are unchanged.** The regression gate is still against **C31101**: FineWeb-Edu val rise ≤ 0.02, HellaSwag drop ≤ 1 point, LAMBADA drop ≤ 1.5 points, same noise rule; 200-item benchmark subsets for candidates, 1,000 items only for the finalist. The win bar is still against **v0.5 Chat (E31140)** on a fresh, hash-frozen private suite: exact sign/McNemar p < 0.05 **and** at least +5 cases net (G10). G5 must not FAIL on any new corpus, including against the fact-sheet held-out set. **Promotion needs Stephon's explicit yes,** whatever the gates say.
+
+**Grid** (`build_sweep_stage_g(token_counts)`), seed E31140, optimizer reset, schedule restarting at 31140, 2 passes over the scratchpad data:
+
+| Cell | scratchpad / grounded facts / chat / FineWeb replay | Peak LR |
+|---|---|---|
+| G1 | 25 / 15 / 10 / 50 | 1e-5 |
+| G2 | 25 / 15 / 10 / 50 | 3e-5 |
+| G3 (optional) | 35 / 20 / 10 / 35 | 1e-5 |
+
+These shares aren't whole rows at Stage F's 24-row updates (15% of 24 = 3.6), so Stage G uses **40-row updates**: micro-batch 5 × 4 accumulation per GPU on 2 × T4, i.e. 5/3/2/10 rows per rank per step for G1/G2 and 7/4/2/7 for G3. `run_env` sets `PLM_EFFECTIVE_BATCH=40` and `PLM_BATCH_SIZE=5`; the split stays whole on 1 GPU too. `source_passes(run, token_counts)` reports how many passes each source gets.
+
+**Masks:** scratchpad, grounded-facts and chat rows are completion-only; replay rows are full loss.
+
+**Grounded-facts data** (`data/build_stage_g_grounded.py`): 2-4 phrasings per non-held-out fact with 2 distractors and shuffled positions, ~25% not-in-facts rows with the fixed not-sure reply, ~10% closed-book rows. Held-out facts never appear in training rows at all. Distractors never contain an alias of the answer. The fact sheet needs a `questions` field (2-4 self-written phrasings per fact); entries without it are skipped and counted.
+
+**Optional answer-token loss weight** (`PLM_ANSWER_LOSS_WEIGHT`, default 1.0 = off): multiplies the loss on the final `Answer: <int>` tokens of scratchpad rows and on the whole short reply of grounded rows, as a weighted mean over supervised tokens. At 1.0 no weights are produced and the loss path is exactly the old one. Validation loss is always unweighted.
