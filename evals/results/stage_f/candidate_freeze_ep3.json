@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "kind": "stage_f_ep3_three_way_candidate_freeze",
+  "frozen_at_et": "2026-11-10T00:51:41-05:00",
+  "seed": {
+    "name": "E31140",
+    "sha256": "ce1fa2098236656d149437638601dfafa7744ab3f69ff52739be0c95199f818b",
+    "tokens_seen": 3058311168
+  },
+  "git_commit_trained": "7292e89f19258433e1709b919ea870f782c5d57e",
+  "mix": "three-way facts/chat/FineWeb via MultiSourceMixer",
+  "epochs_over_facts": 3,
+  "promotion": "NONE \u2014 neither candidate met the private-win bar; live remains v0.5 Chat (E31140); PR #103 kept as draft; 1000-item HS/LAMBADA not run",
+  "candidates": {
+    "F31274": {
+      "kernel": "galacticaiteam/plm-stage-f-e31140-rr25-ch25-ep3-lr1e5",
+      "step": 31274,
+      "updates": 134,
+      "replay_ratio": 0.25,
+      "chat_ratio": 0.25,
+      "shares": "facts 50% / chat 25% / FineWeb 25%",
+      "weights": "step_00031274.safetensors",
+      "weights_sha256": "8e9f7beed5c090fbd1e306b8cbaf50e99d4e7773fcf77fe20e16d1044629a177",
+      "tokens_seen": 3061604352
+    },
+    "F31340": {
+      "kernel": "galacticaiteam/plm-stage-f-e31140-rr50-ch17-ep3-lr1e5",
+      "step": 31340,
+      "updates": 200,
+      "replay_ratio": 0.5,
+      "chat_ratio": 0.16666666666666666,
+      "shares": "facts 33% / chat 17% / FineWeb 50%",
+      "weights": "step_00031340.safetensors",
+      "weights_sha256": "4cb036c6667305c58b7819a521d344ed827fef55dd84927f0e63973e70c708bc",
+      "tokens_seen": 3063226368
+    }
+  }
+}

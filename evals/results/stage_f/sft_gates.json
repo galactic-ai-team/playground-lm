@@ -1,0 +1,66 @@
+{
+  "gates": [
+    {
+      "gate": "G5 leakage",
+      "status": "PASS",
+      "train_examples": 20718,
+      "val_examples": 469,
+      "val_exact_user_in_train": 0,
+      "val_exact_assistant_in_train": 0,
+      "val_completions_with_13gram_in_train": 1,
+      "val_completions_long_enough": 305,
+      "ngram_overlap_rate": 0.0033,
+      "overlap_by_source": {
+        "databricks/databricks-dolly-15k": [
+          1,
+          394
+        ],
+        "generated-arithmetic": [
+          0,
+          39
+        ],
+        "generated-identity": [
+          0,
+          33
+        ],
+        "openai/gsm8k": [
+          0,
+          3
+        ]
+      },
+      "note": "short templated completions (generated arithmetic/identity) are below the n-gram length; check them by source, they can share templates across train and val"
+    },
+    {
+      "gate": "G3 masks",
+      "status": "PASS",
+      "train": {
+        "examples": 20718,
+        "tokens": 1171050,
+        "supervised_tokens": 414370,
+        "oversized_examples": 0,
+        "unsupervisable_tokens": 0,
+        "malformed": 0,
+        "supervisable_fraction": 1.0
+      },
+      "val": {
+        "examples": 469,
+        "tokens": 33888,
+        "supervised_tokens": 19212,
+        "oversized_examples": 0,
+        "unsupervisable_tokens": 0,
+        "malformed": 0,
+        "supervisable_fraction": 1.0
+      }
+    },
+    {
+      "gate": "G4 shift",
+      "status": "PASS",
+      "windows": 64,
+      "supervised_checked": 34707,
+      "violations": 0
+    }
+  ],
+  "g5": "PASS",
+  "g3": "PASS",
+  "g4": "PASS"
+}

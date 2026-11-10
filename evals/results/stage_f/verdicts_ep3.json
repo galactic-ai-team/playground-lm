@@ -1,0 +1,167 @@
+{
+  "E31140": {
+    "candidate": "E31140",
+    "tolerances": {
+      "fineweb_val_loss_increase": 0.02,
+      "hellaswag_drop": 0.01,
+      "lambada_drop": 0.015
+    },
+    "metrics": {
+      "fineweb_val_loss": {
+        "baseline": 3.0519859433174132,
+        "candidate": 3.0591646790504456,
+        "delta": 0.007178735733032404,
+        "status": "PASS"
+      },
+      "hellaswag": {
+        "baseline": 0.37,
+        "candidate": 0.39,
+        "delta": 0.020000000000000018,
+        "noise_95": 0.09511555077903928,
+        "examples": 200,
+        "status": "PASS"
+      },
+      "lambada": {
+        "baseline": 0.24,
+        "candidate": 0.26,
+        "delta": 0.020000000000000018,
+        "noise_95": 0.08484785442190038,
+        "examples": 200,
+        "status": "PASS"
+      }
+    },
+    "status": "PASS"
+  },
+  "F31204": {
+    "candidate": "F31204",
+    "tolerances": {
+      "fineweb_val_loss_increase": 0.02,
+      "hellaswag_drop": 0.01,
+      "lambada_drop": 0.015
+    },
+    "metrics": {
+      "fineweb_val_loss": {
+        "baseline": 3.0519859433174132,
+        "candidate": 3.056968295574188,
+        "delta": 0.004982352256774902,
+        "status": "PASS"
+      },
+      "hellaswag": {
+        "baseline": 0.37,
+        "candidate": 0.38,
+        "delta": 0.010000000000000009,
+        "noise_95": 0.09488303114888351,
+        "examples": 200,
+        "status": "PASS"
+      },
+      "lambada": {
+        "baseline": 0.24,
+        "candidate": 0.26,
+        "delta": 0.020000000000000018,
+        "noise_95": 0.08484785442190038,
+        "examples": 200,
+        "status": "PASS"
+      }
+    },
+    "status": "PASS"
+  },
+  "F31236": {
+    "candidate": "F31236",
+    "tolerances": {
+      "fineweb_val_loss_increase": 0.02,
+      "hellaswag_drop": 0.01,
+      "lambada_drop": 0.015
+    },
+    "metrics": {
+      "fineweb_val_loss": {
+        "baseline": 3.0519859433174132,
+        "candidate": 3.0522205591201783,
+        "delta": 0.00023461580276507021,
+        "status": "PASS"
+      },
+      "hellaswag": {
+        "baseline": 0.37,
+        "candidate": 0.38,
+        "delta": 0.010000000000000009,
+        "noise_95": 0.09488303114888351,
+        "examples": 200,
+        "status": "PASS"
+      },
+      "lambada": {
+        "baseline": 0.24,
+        "candidate": 0.25,
+        "delta": 0.010000000000000009,
+        "noise_95": 0.08429139457856893,
+        "examples": 200,
+        "status": "PASS"
+      }
+    },
+    "status": "PASS"
+  },
+  "F31274": {
+    "candidate": "F31274",
+    "tolerances": {
+      "fineweb_val_loss_increase": 0.02,
+      "hellaswag_drop": 0.01,
+      "lambada_drop": 0.015
+    },
+    "metrics": {
+      "fineweb_val_loss": {
+        "baseline": 3.0519859433174132,
+        "candidate": 3.0562479496002197,
+        "delta": 0.004262006282806485,
+        "status": "PASS"
+      },
+      "hellaswag": {
+        "baseline": 0.37,
+        "candidate": 0.375,
+        "delta": 0.0050000000000000044,
+        "noise_95": 0.09475895630493193,
+        "examples": 200,
+        "status": "PASS"
+      },
+      "lambada": {
+        "baseline": 0.24,
+        "candidate": 0.255,
+        "delta": 0.015000000000000013,
+        "noise_95": 0.08457292119821805,
+        "examples": 200,
+        "status": "PASS"
+      }
+    },
+    "status": "PASS"
+  },
+  "F31340": {
+    "candidate": "F31340",
+    "tolerances": {
+      "fineweb_val_loss_increase": 0.02,
+      "hellaswag_drop": 0.01,
+      "lambada_drop": 0.015
+    },
+    "metrics": {
+      "fineweb_val_loss": {
+        "baseline": 3.0519859433174132,
+        "candidate": 3.0513016819953918,
+        "delta": -0.0006842613220214844,
+        "status": "PASS"
+      },
+      "hellaswag": {
+        "baseline": 0.37,
+        "candidate": 0.38,
+        "delta": 0.010000000000000009,
+        "noise_95": 0.09488303114888351,
+        "examples": 200,
+        "status": "PASS"
+      },
+      "lambada": {
+        "baseline": 0.24,
+        "candidate": 0.255,
+        "delta": 0.015000000000000013,
+        "noise_95": 0.08457292119821805,
+        "examples": 200,
+        "status": "PASS"
+      }
+    },
+    "status": "PASS"
+  }
+}
