@@ -37,5 +37,23 @@ def test_manifest_schema():
 
 def test_demo_files_exist():
     d = MANIFEST.parent
-    for name in ("index.html", "app.js", "style.css"):
+    for name in ("index.html", "app.js", "style.css", "favicon.svg"):
         assert (d / name).is_file()
+    svg = (d / "favicon.svg").read_text()
+    assert "<svg" in svg and "PL" in svg
+
+
+def test_live_checkpoint_v05_chat_label_preserves_weights():
+    m = json.loads(MANIFEST.read_text())
+    live = next(c for c in m["checkpoints"] if c["step"] == 31140)
+    assert live["label"] == "v0.5 Chat (Stage E)"
+    assert live["tokens_seen"] == 3058311168
+    assert live["quant"] == "q8"
+    assert live["bytes"] == 179148599
+    assert live["onnx_url"] == (
+        "https://huggingface.co/Gteam04/playground-lm-onnx/resolve/"
+        "27778a045bee172529170330ada959131037da64/step_00031140.q8.onnx"
+    )
+    assert live["sha256"] == "0fb5504d0e98e4eeb2032a3c450ffd2b0d996bb11c8d27912be1d79b821fdee8"
+    assert m["model_hosting"]["live_step"] == 31140
+    assert m["model_hosting"]["rollback"]["step"] == 31104

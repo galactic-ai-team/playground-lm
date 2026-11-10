@@ -19,11 +19,11 @@
         <div class="brand-mark" aria-hidden="true">PL</div>
         <div>
           <h1>PlaygroundLM</h1>
-          <p class="tagline">124M · from-scratch · runs in your browser</p>
+          <p class="tagline" id="header-tagline">v0.5 Chat · 124M · runs in your browser</p>
         </div>
       </div>
       <div class="top-actions">
-        <button type="button" class="ghost-btn" id="btn-new-chat" title="Clear conversation">New chat</button>
+        <button type="button" class="ghost-btn" id="btn-new-chat" title="Clear conversation. Use this if replies start repeating.">New chat</button>
         <button type="button" class="ghost-btn" id="btn-toggle-advanced" aria-expanded="false" aria-controls="advanced-panel">Advanced</button>
       </div>
     </header>
@@ -58,7 +58,7 @@
         <button type="button" class="btn-stop" id="btn-stop" disabled>Stop</button>
         <button type="submit" class="btn-send" id="btn-send" disabled>Send</button>
       </div>
-      <p class="composer-hint">Enter to send · Shift+Enter for a new line</p>
+      <p class="composer-hint">Enter to send · Shift+Enter for a new line · If replies start repeating, tap New chat</p>
     </form>
 
     <section id="advanced-panel" class="advanced-panel hidden" hidden>

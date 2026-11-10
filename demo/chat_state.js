@@ -6,6 +6,8 @@
 
 export const CONTEXT_LENGTH = 1024;
 export const DEFAULT_REPLY_RESERVE = 64;
+/** Newest user turns packed into the model prompt (full transcript still shows in the UI). */
+export const MAX_PROMPT_TURNS = 3;
 export const STOP_SEQUENCES = Object.freeze([
   '<|endoftext|>',
   '\nUser:',

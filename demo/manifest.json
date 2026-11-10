@@ -43,7 +43,7 @@
     {
       "step": 31140,
       "tokens_seen": 3058311168,
-      "label": "Stage E",
+      "label": "v0.5 Chat (Stage E)",
       "quant": "q8",
       "onnx_url": "https://huggingface.co/Gteam04/playground-lm-onnx/resolve/27778a045bee172529170330ada959131037da64/step_00031140.q8.onnx",
       "bytes": 179148599,

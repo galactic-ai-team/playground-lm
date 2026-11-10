@@ -8,7 +8,7 @@
 | Item | Value |
 |------|-------|
 | Live demo | https://playground-lm.vercel.app |
-| Live step | **31140** (Stage E Round 3) |
+| Live step | **31140** (Stage E Round 3; friendly name **v0.5 Chat**) |
 | Weights SHA | `ce1fa2098236656d149437638601dfafa7744ab3f69ff52739be0c95199f818b` |
 | ONNX q8 SHA | `0fb5504d0e98e4eeb2032a3c450ffd2b0d996bb11c8d27912be1d79b821fdee8` |
 | HF path | `Gteam04/playground-lm-onnx` / `step_00031140.q8.onnx` @ rev `27778a045bee172529170330ada959131037da64` |

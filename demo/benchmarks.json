@@ -76,7 +76,7 @@
     },
     {
       "id": "step_00031140",
-      "label": "PlaygroundLM Stage E Round 3 \u2014 Step 31,140 (r3-rr50-ep1-lr1e5)",
+      "label": "PlaygroundLM v0.5 Chat \u2014 Stage E Round 3 \u2014 Step 31,140 (r3-rr50-ep1-lr1e5)",
       "step": 31140,
       "validation_split": "stage_c_subset_r3",
       "val_loss": 3.059,
@@ -96,5 +96,5 @@
     }
   ],
   "source_type": "reported_rounded_summary",
-  "notes": "Rounded reported results. Stage B uses a different validation split and its val loss/PPL must not be directly compared with Stage C/D FineWeb rows. Stage C s1, s2, final (step 31,101), Stage D finetune (step 31,104), and GPT-2 use the same Stage C FineWeb-Edu val.bin. Stage D slightly raises FineWeb val loss vs Stage C final (3.181 vs 3.174) while improving LAMBADA (24.5% vs 23.0%); HellaSwag is flat (~30.0%). Both Stage C final and Stage D beat GPT-2 on FineWeb val loss (3.279) but trail on HellaSwag (30.9%) and LAMBADA (32.6%). Playground finetune-val loss (5.234 on 2143 tok) is a separate domain metric and is not shown in this table. Lower FineWeb-Edu validation loss does not establish superior general-purpose capabilities. Stage E Round 3 (31,140) FineWeb/HS/LAMBADA in this table are Round-3 subset scores (C comparable subset FineWeb 3.052); do not compare Stage E FineWeb 3.059 directly to Stage C full-val 3.174. Private suite aggregate 1/60 vs 0/60."
+  "notes": "Rounded reported results. Stage B uses a different validation split and its val loss/PPL must not be directly compared with Stage C/D FineWeb rows. Stage C s1, s2, final (step 31,101), Stage D finetune (step 31,104), and GPT-2 use the same Stage C FineWeb-Edu val.bin. Stage D slightly raises FineWeb val loss vs Stage C final (3.181 vs 3.174) while improving LAMBADA (24.5% vs 23.0%); HellaSwag is flat (~30.0%). Both Stage C final and Stage D beat GPT-2 on FineWeb val loss (3.279) but trail on HellaSwag (30.9%) and LAMBADA (32.6%). Playground finetune-val loss (5.234 on 2143 tok) is a separate domain metric and is not shown in this table. Lower FineWeb-Edu validation loss does not establish superior general-purpose capabilities. Stage E Round 3 / v0.5 Chat (31,140) FineWeb/HS/LAMBADA in this table are Round-3 subset scores (C comparable subset FineWeb 3.052); do not compare Stage E FineWeb 3.059 directly to Stage C full-val 3.174. Private suite aggregate 1/60 vs 0/60."
 }

@@ -21,6 +21,7 @@ import {
   handleStopHotkey,
   statusAfterGeneration,
   CONTEXT_LENGTH,
+  MAX_PROMPT_TURNS,
 } from './chat_state.js';
 
 export const DEFAULT_RIDDLE_PROMPTS = [
@@ -56,6 +57,7 @@ let stopRequested = false;
 let tokenizer = null;
 let checkpointManager = null;
 let chatMessages = [];
+let lastCheckpointMeta = '';
 let stickToBottom = true;
 
 const runtimeDot = document.getElementById('runtime-dot');
@@ -473,6 +475,11 @@ function handleCheckpointStatus(status) {
     setTextContent(metaStep, Number(checkpoint.step).toLocaleString());
     setTextContent(metaTokens, Number(checkpoint.tokens_seen || 0).toLocaleString());
     setTextContent(modelBadgeEl, checkpoint.label || `step ${checkpoint.step}`);
+    lastCheckpointMeta = checkpoint.label || `step ${checkpoint.step}`;
+    const taglineEl = document.getElementById('header-tagline');
+    if (taglineEl) {
+      setTextContent(taglineEl, `${lastCheckpointMeta} · 124M · runs in your browser`);
+    }
   }
 
   if (state === 'mounted' && session) {
@@ -595,6 +602,7 @@ async function runChatGeneration(userText) {
   const packed = trimMessagesToBudget(chatMessages, (t) => tokenizer.encode(t), {
     contextLength: CONTEXT_LENGTH,
     reserveNewTokens: maxNewTokens,
+    maxTurns: MAX_PROMPT_TURNS,
   });
   let inputIds = packed.inputIds.slice();
   if (!inputIds.length) inputIds.push(GPT2_EOT_ID);
@@ -682,7 +690,11 @@ async function runChatGeneration(userText) {
       error: hadError,
       hasSession: Boolean(onnxSession),
     });
-    setStatus(finalStatus.text, { ready: finalStatus.ready, error: finalStatus.error });
+    setStatus(finalStatus.text, {
+      ready: finalStatus.ready,
+      error: finalStatus.error,
+      meta: finalStatus.ready ? lastCheckpointMeta : '',
+    });
     composerInput.focus();
   }
 }
