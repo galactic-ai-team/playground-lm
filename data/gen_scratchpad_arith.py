@@ -261,6 +261,11 @@ def check_row(op: str, a: int, b: int, assistant: str) -> None:
         raise ValueError(f"final answer mismatch for {op}:{a}:{b}")
     if verify_steps(assistant) == 0:
         raise ValueError("no checkable steps")
+    # Equation checks and the final result alone miss incorrect 'write',
+    # 'carry', and digit-assembly annotations. Generated rows have a single
+    # canonical serialization; reject any internally inconsistent variant.
+    if assistant != solve(op, a, b):
+        raise ValueError("noncanonical scratchpad annotation or step text")
 
 
 # ---- sampling / split ----------------------------------------------------------
