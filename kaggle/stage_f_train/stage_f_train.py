@@ -520,7 +520,15 @@ def main() -> int:
         log(f"WARN: train set ({n_train:,} tokens) is smaller than one 24-sequence batch")
 
     env = dict(os.environ)
-    ms = list(range(seed_step + 10, max_steps, 10))
+    # Keep milestone count small: every 10-step pin is fine for short
+    # 1-epoch cells, but each milestone keeps a ~1 GB optimizer state and
+    # Kaggle's working disk is ~20 GB. Longer three-way runs use a wider
+    # grid so we do not fill the disk mid-save.
+    if os.environ.get("PLM_MILESTONES"):
+        ms = [int(x) for x in os.environ["PLM_MILESTONES"].split(",") if x.strip()]
+    else:
+        grid = 50 if span > 80 else 10
+        ms = list(range(seed_step + grid, max_steps, grid))
     if not ms or ms[-1] != max_steps:
         ms.append(max_steps)
     # Conservative short-run defaults: eval every 5 (or 1 if tiny).
@@ -559,7 +567,7 @@ def main() -> int:
         "PLM_RESET_OPTIMIZER": os.environ.get("PLM_RESET_OPTIMIZER", "1"),
         "PLM_WEIGHTS_ONLY_RESUME": os.environ.get("PLM_WEIGHTS_ONLY_RESUME", "1"),
         "PLM_MILESTONES": ",".join(str(x) for x in ms),
-        "PLM_CKPT_INTERVAL_S": os.environ.get("PLM_CKPT_INTERVAL_S", "60"),
+        "PLM_CKPT_INTERVAL_S": os.environ.get("PLM_CKPT_INTERVAL_S", "1800"),
     })
     token = gh_token()
     if token:
