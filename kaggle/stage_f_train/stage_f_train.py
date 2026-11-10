@@ -122,17 +122,26 @@ def _stage_pair(src_bin: Path, src_mask: Path, dest_dir: Path, stem: str = "trai
 def stage_three_way_data() -> int:
     """Facts train into DATA_DIR, chat train into CHAT_DIR, frozen val at DATA_DIR."""
     root = find_stage_f_root()
-    facts, chat = root / "facts", root / "chat"
-    if not (facts / "train.bin").is_file() or not (facts / "train.masks.bin").is_file():
-        raise SystemExit(f"PLM_CHAT_RATIO set but facts stream missing under {facts}")
-    if not (chat / "train.bin").is_file() or not (chat / "train.masks.bin").is_file():
-        raise SystemExit(f"PLM_CHAT_RATIO set but chat stream missing under {chat}")
+    # Prefer facts/ and chat/ subdirs; fall back to flat root names (Kaggle
+    # dataset --dir-mode skip does not upload subdirectories).
+    if (root / "facts" / "train.bin").is_file():
+        facts_bin, facts_mask = root / "facts" / "train.bin", root / "facts" / "train.masks.bin"
+    else:
+        facts_bin, facts_mask = root / "facts_train.bin", root / "facts_train.masks.bin"
+    if (root / "chat" / "train.bin").is_file():
+        chat_bin, chat_mask = root / "chat" / "train.bin", root / "chat" / "train.masks.bin"
+    else:
+        chat_bin, chat_mask = root / "chat_train.bin", root / "chat_train.masks.bin"
+    if not facts_bin.is_file() or not facts_mask.is_file():
+        raise SystemExit(f"PLM_CHAT_RATIO set but facts stream missing under {root}")
+    if not chat_bin.is_file() or not chat_mask.is_file():
+        raise SystemExit(f"PLM_CHAT_RATIO set but chat stream missing under {root}")
     val_bin, val_mask = root / "val.bin", root / "val.masks.bin"
     if not val_bin.is_file() or not val_mask.is_file():
         raise SystemExit(f"frozen val missing under {root}")
-    _stage_pair(facts / "train.bin", facts / "train.masks.bin", DATA_DIR, "train")
+    _stage_pair(facts_bin, facts_mask, DATA_DIR, "train")
     _stage_pair(val_bin, val_mask, DATA_DIR, "val")
-    _stage_pair(chat / "train.bin", chat / "train.masks.bin", CHAT_DIR, "train")
+    _stage_pair(chat_bin, chat_mask, CHAT_DIR, "train")
     os.environ["PLM_CHAT_DIR"] = str(CHAT_DIR)
     log(f"three-way mix: facts {DATA_DIR}, chat {CHAT_DIR}, val from {root}")
     return token_count(DATA_DIR / "train.bin")
