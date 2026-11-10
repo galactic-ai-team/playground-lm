@@ -81,19 +81,74 @@ export function findStopSequence(text, stopSequences = STOP_SEQUENCES) {
   };
 }
 
+/** Stage G: max tokens of retrieved facts injected into the newest user turn. */
+export const FACTS_TOKEN_BUDGET = 160;
+
+function collapseSpace(text) {
+  return String(text ?? '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Stage G fact line, byte-identical to data/build_stage_g_grounded.py facts_prompt():
+ * "Facts: [1] <text> [2] <text> [3] <text> Question: <question>".
+ * Facts are ranked best-first; the lowest-ranked ones are dropped until the facts part
+ * fits `budget` tokens (by `encode` when given, else ~4 chars/token). Never mutates input.
+ */
+export function buildFactsQuestion(question, facts, { encode = null, budget = FACTS_TOKEN_BUDGET } = {}) {
+  const texts = (Array.isArray(facts) ? facts : [])
+    .map((f) => collapseSpace(typeof f === 'string' ? f : f && f.text))
+    .filter(Boolean);
+  const q = collapseSpace(question);
+  const cost = (s) => (typeof encode === 'function' ? encode(s).length : Math.ceil(s.length / 4));
+  let kept = texts.slice();
+  while (kept.length > 0) {
+    const listed = kept.map((t, i) => `[${i + 1}] ${t}`).join(' ');
+    if (cost(`Facts: ${listed}`) <= budget) {
+      return { content: `Facts: ${listed} Question: ${q}`, used: kept.length };
+    }
+    kept = kept.slice(0, -1);
+  }
+  return { content: q, used: 0 };
+}
+
 /**
  * Format messages into a plain prompt the model continues from.
  * Ends with an exact "Assistant:" cue (no trailing space) so GPT-2 BPE predicts
  * the leading-space completion token ("Ġ...") trained in data/build_stage_e_sft.py.
+ *
+ * Stage G (Gemini, ported by Lumi): with `options.facts` (ranked facts or strings), ONLY the
+ * newest user turn becomes the Facts/Question line; older turns and the visible transcript are
+ * unchanged. Without facts the output is byte-identical to v0.5 Chat.
  */
-export function formatChatPrompt(messages) {
+export function formatChatPrompt(messages, options = {}) {
+  const facts = Array.isArray(options.facts) && options.facts.length > 0 ? options.facts : null;
+  const list = messages || [];
+  let newestUser = -1;
+  if (facts) {
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i];
+      if (m && m.role === 'user' && m.content != null && String(m.content).trim()) {
+        newestUser = i;
+        break;
+      }
+    }
+  }
   const lines = [];
-  for (const msg of messages || []) {
+  for (let i = 0; i < list.length; i++) {
+    const msg = list[i];
     if (!msg || msg.content === undefined || msg.content === null) continue;
     const raw = String(msg.content).replace(/\r\n?/g, '\n');
     if (!raw.trim()) continue;
     if (msg.role === 'user') {
-      lines.push(`User: ${raw.trim()}`);
+      if (i === newestUser) {
+        const { content } = buildFactsQuestion(raw, facts, {
+          encode: options.encode || null,
+          budget: options.factsBudget ?? FACTS_TOKEN_BUDGET,
+        });
+        lines.push(`User: ${content}`);
+      } else {
+        lines.push(`User: ${raw.trim()}`);
+      }
     } else if (msg.role === 'assistant') {
       const cleanAssistant = normalizeCompletionText(raw, { trimEnd: true });
       if (cleanAssistant) lines.push(`Assistant: ${cleanAssistant}`);
@@ -113,7 +168,10 @@ export function trimMessagesToBudget(messages, encode, {
   contextLength = CONTEXT_LENGTH,
   reserveNewTokens = DEFAULT_REPLY_RESERVE,
   maxTurns = null,
+  facts = null,
+  factsBudget = FACTS_TOKEN_BUDGET,
 } = {}) {
+  const fmtOpts = facts ? { facts, encode, factsBudget } : {};
   const budget = Math.max(8, contextLength - Math.max(1, reserveNewTokens) - 4);
   let list = (Array.isArray(messages) ? messages : []).filter(
     (m) => m && typeof m.content === 'string' && m.content.trim().length > 0
@@ -136,7 +194,7 @@ export function trimMessagesToBudget(messages, encode, {
   while (list.length > 0) {
     // Prefer transcripts that start on a user turn.
     while (list.length > 1 && list[0].role !== 'user') list.shift();
-    const prompt = formatChatPrompt(list);
+    const prompt = formatChatPrompt(list, fmtOpts);
     const ids = encode(prompt);
     if (ids.length <= budget) {
       return { messages: list, prompt, inputIds: ids, truncated: list.length !== initialLength };

@@ -23,14 +23,15 @@ export function tokenize(text) {
 }
 
 export function buildIndex(facts) {
-  const documents = (Array.isArray(facts) ? facts : []).map(f => {
+  const documents = (Array.isArray(facts) ? facts : []).map((f, i) => {
     const rawText = f.text || "";
     const kw = Array.isArray(f.keywords) ? f.keywords.join(" ") : "";
     const al = Array.isArray(f.aliases) ? f.aliases.join(" ") : "";
     const combined = `${rawText} ${kw} ${al}`;
     const tokens = tokenize(combined);
     return {
-      id: f.id || String(Math.random()),
+      // Lumi glue: deterministic fallback id (was Math.random) so tie-breaks are stable.
+      id: f.id ? String(f.id) : `fact-${String(i).padStart(6, '0')}`,
       text: rawText,
       tokens,
       length: tokens.length
@@ -92,7 +93,8 @@ export function retrieve(index, query, { k = 3, minScore = 0.0 } = {}) {
   });
 
   return scores
-    .filter(s => s.score >= minScore)
+    // Lumi glue: never return zero-score (non-matching) facts, whatever minScore is.
+    .filter(s => s.score > 0 && s.score >= minScore)
     .slice(0, k)
     .map(s => ({ id: s.id, text: s.text, score: s.score }));
 }
