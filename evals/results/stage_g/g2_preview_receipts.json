@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "kind": "stage_g_g2_preview_receipts",
+  "candidate": "G2_31505",
+  "weights_sha256": "a4710eb328e0ac7ca240ce02c5d8711586a01f405660d690053f86e0427bb6be",
+  "incumbent": "E31140 (v0.5 Chat, stays live)",
+  "stage_f_private_suite": {
+    "suite_sha256": "30b9127f3c8bd66785aabde56fe69e6572cf6d8d2bbf6591a37db2d061fb1cfa",
+    "n": 72,
+    "E31140_passed": 2,
+    "G2_passed": 10,
+    "wins": 8,
+    "losses": 0,
+    "net": 8,
+    "mcnemar_exact_p": 0.0078125,
+    "no_net_loss": true
+  },
+  "stage_g_private_suite_s2_pipeline": {
+    "n": 90,
+    "E31140_passed": 2,
+    "G2_passed": 22,
+    "net": 20,
+    "mcnemar_exact_p": "~1.1e-5",
+    "source": "evals/results/stage_g/TRACK1_PUBLIC_AGGREGATE.json"
+  },
+  "full_regression_vs_C31101": "PENDING (full FineWeb val + full HellaSwag + full LAMBADA, CPU) - see g2_full_regression.json when done",
+  "onnx_q8": {
+    "sha256": "f7a76210291f00d9eaca0fe12f4c74fdc3be6ad71475af447777c9a3fd5792de",
+    "bytes": 179148599,
+    "top1_agreement": 1.0,
+    "mean_kl_nats": 0.00126,
+    "hf_repo": "Gteam04/playground-lm-onnx",
+    "hf_revision": "5cb457dd7a31d51505f73e083a7f9ecc17ea54a7",
+    "hf_path": "previews/stage_g_g2_31505/step_00031505_g2.q8.onnx",
+    "live_v05_files_touched": false
+  },
+  "demo": {
+    "fact_lookup": "BM25 top-3 from demo/facts/fact_sheet.jsonl (sha f6ec9c14...), 'Facts: [1] ... Question: ...', '(none)' when empty; only for manifest entries with fact_lookup:true",
+    "preview_only": true,
+    "production": "unchanged (v0.5 Chat)"
+  },
+  "promotion": "NONE - Stephon decides",
+  "note": "Totals and hashes only; no private items or outputs."
+}
