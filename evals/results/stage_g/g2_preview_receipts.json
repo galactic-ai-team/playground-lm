@@ -23,7 +23,16 @@
     "mcnemar_exact_p": "~1.1e-5",
     "source": "evals/results/stage_g/TRACK1_PUBLIC_AGGREGATE.json"
   },
-  "full_regression_vs_C31101": "PENDING (full FineWeb val + full HellaSwag + full LAMBADA, CPU) - see g2_full_regression.json when done",
+  "full_regression_vs_C31101": {
+    "status": "PASS",
+    "source": "evals/results/stage_g/G2_vs_C31101_full_regression.json",
+    "fineweb_delta": 0.004225557891381904,
+    "fineweb_limit": 0.02,
+    "hellaswag_drop_points": 0.08962358095996881,
+    "lambada_drop_points": 0.09703085581214965,
+    "g5": "PASS (not FAIL)",
+    "promotion": "NONE - Stephon decides"
+  },
   "onnx_q8": {
     "sha256": "f7a76210291f00d9eaca0fe12f4c74fdc3be6ad71475af447777c9a3fd5792de",
     "bytes": 179148599,
