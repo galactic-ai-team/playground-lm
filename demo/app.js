@@ -23,6 +23,7 @@ import {
   CONTEXT_LENGTH,
   MAX_PROMPT_TURNS,
 } from './chat_state.js';
+import { buildIndex, parseFactSheet, lookupFacts } from './fact_retrieval.js';
 
 export const DEFAULT_RIDDLE_PROMPTS = [
   'Tell me a short riddle.',
@@ -58,6 +59,22 @@ let tokenizer = null;
 let checkpointManager = null;
 let chatMessages = [];
 let lastCheckpointMeta = '';
+// Stage G fact lookup (Gemini's BM25, wired by Lumi): only for checkpoints whose
+// manifest entry sets `fact_lookup: true`; v0.5 prompts stay byte-identical.
+let activeCheckpoint = null;
+let factIndexPromise = null;
+const FACT_SHEET_URL = './facts/fact_sheet.jsonl'; // copy of data/facts/fact_sheet.jsonl (sha f6ec9c14…)
+
+function loadFactIndex() {
+  if (!factIndexPromise) {
+    factIndexPromise = fetch(FACT_SHEET_URL, { cache: 'force-cache' })
+      .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`fact sheet HTTP ${r.status}`))))
+      .then((t) => buildIndex(parseFactSheet(t)))
+      .catch((err) => { factIndexPromise = null; throw err; });
+  }
+  return factIndexPromise;
+}
+
 let stickToBottom = true;
 
 const runtimeDot = document.getElementById('runtime-dot');
@@ -470,6 +487,7 @@ function handleCheckpointStatus(status) {
     btn.classList.toggle('active', Number(btn.dataset.idx) === index);
   });
   if (checkpoint) {
+    activeCheckpoint = checkpoint;
     activeCheckpointStep = checkpoint.step;
     setTextContent(metaModel, manifest.model || 'PlaygroundLM');
     setTextContent(metaStep, Number(checkpoint.step).toLocaleString());
@@ -599,10 +617,20 @@ async function runChatGeneration(userText) {
   const assistantBubble = addMessageBubble('assistant', 'Thinking…', { pending: true });
 
   const maxNewTokens = parseInt(maxTokensSlider.value, 10);
+  const factLookup = Boolean(activeCheckpoint && activeCheckpoint.fact_lookup === true);
+  let facts = null;
+  if (factLookup) {
+    try {
+      facts = lookupFacts(await loadFactIndex(), cleaned);
+    } catch {
+      facts = []; // sheet unavailable: same "(none)" format the model was scored on
+    }
+  }
   const packed = trimMessagesToBudget(chatMessages, (t) => tokenizer.encode(t), {
     contextLength: CONTEXT_LENGTH,
     reserveNewTokens: maxNewTokens,
     maxTurns: MAX_PROMPT_TURNS,
+    ...(factLookup ? { facts, factLookup: true } : {}),
   });
   let inputIds = packed.inputIds.slice();
   if (!inputIds.length) inputIds.push(GPT2_EOT_ID);

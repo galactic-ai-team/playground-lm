@@ -48,6 +48,17 @@
       "onnx_url": "https://huggingface.co/Gteam04/playground-lm-onnx/resolve/27778a045bee172529170330ada959131037da64/step_00031140.q8.onnx",
       "bytes": 179148599,
       "sha256": "0fb5504d0e98e4eeb2032a3c450ffd2b0d996bb11c8d27912be1d79b821fdee8"
+    },
+    {
+      "step": 31505,
+      "tokens_seen": 3073261568,
+      "label": "v0.6 Chat (Stage G)",
+      "quant": "q8",
+      "onnx_url": "https://huggingface.co/Gteam04/playground-lm-onnx/resolve/d9e1629d821e7a9550fac9c54c56b132cd9327b5/live/v0.6_g2_31505/step_00031505_g2.q8.onnx",
+      "bytes": 179148599,
+      "sha256": "f7a76210291f00d9eaca0fe12f4c74fdc3be6ad71475af447777c9a3fd5792de",
+      "fact_lookup": true,
+      "fact_sheet_sha256": "f6ec9c14c29d55dc50cbd4c855a6de9e9654b65c765d1449a02d039e24c2ed33"
     }
   ],
   "benchmarks": {
@@ -83,14 +94,16 @@
   ],
   "model_hosting": {
     "repo": "Gteam04/playground-lm-onnx",
-    "revision": "27778a045bee172529170330ada959131037da64",
+    "revision": "d9e1629d821e7a9550fac9c54c56b132cd9327b5",
     "status": "published",
     "runtime": "onnxruntime-web@1.24.3 WASM",
-    "live_step": 31140,
+    "live_step": 31505,
     "rollback": {
-      "step": 31104,
-      "onnx_url": "https://huggingface.co/Gteam04/playground-lm-onnx/resolve/9732b2c8318190b43b5f97c9f7299559efd46b26/step_00031104.q8.onnx",
-      "note": "One-line revert: set live checkpoint onnx_url (and/or remove Stage E entry so last=D) back to D31104 URL above; D files remain on HF."
+      "step": 31140,
+      "label": "v0.5 Chat (Stage E)",
+      "onnx_url": "https://huggingface.co/Gteam04/playground-lm-onnx/resolve/27778a045bee172529170330ada959131037da64/step_00031140.q8.onnx",
+      "sha256": "0fb5504d0e98e4eeb2032a3c450ffd2b0d996bb11c8d27912be1d79b821fdee8",
+      "note": "One-step rollback to v0.5 Chat (E31140): revert the v0.6 promotion PR/commit on main (Vercel redeploys), OR set model_hosting.live_step to 31140 and remove the step 31505 entry so the slider default (last checkpoint) is 31140. E31140 and D31104 files remain on HF; fact lookup stays off unless the selected checkpoint has fact_lookup: true. See docs/ROLLBACK.md."
     }
   }
 }
