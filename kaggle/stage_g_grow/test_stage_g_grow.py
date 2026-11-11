@@ -29,3 +29,11 @@ def test_find_seed_runs(tmp_path, monkeypatch):
     (runs / "manifest.json").write_text(json.dumps({}))
     (runs / "checkpoints" / "step_00031101.safetensors").write_bytes(b"x")
     assert m.find_seed_runs() == runs
+
+
+def test_kernel_metadata_self_references_for_resume():
+    meta = json.loads((HERE / "kernel-metadata.json").read_text())
+    assert meta["id"].endswith("/plm-stage-g-grow355")
+    assert "galacticaiteam/plm-stage-g-grow355" in meta["kernel_sources"]
+    assert meta["code_file"] == "stage_g_grow.py"
+    assert "galacticaiteam/plm-g355-seed" in meta["dataset_sources"]
