@@ -146,14 +146,25 @@ class MultiSourceMixer:
         return best
 
     def __next__(self):
-        xs, ys = [], []
+        xs, ys, ws = [], [], []
         for _ in range(self.batch_size):
             i = self._pick()
-            x, y = next(self.sources[i])
-            xs.append(x)
-            ys.append(y)
+            row = next(self.sources[i])
+            xs.append(row[0])
+            ys.append(row[1])
+            ws.append(row[2] if len(row) > 2 else None)
             self.served[i] += 1
-        return _cat(xs), _cat(ys)
+        if all(w is None for w in ws):
+            return _cat(xs), _cat(ys)
+        # Some source weights its answer tokens (Stage G): other rows get 1.0.
+        ws = [w if w is not None else _ones_like(y) for w, y in zip(ws, ys)]
+        return _cat(xs), _cat(ys), _cat(ws)
+
+
+def _ones_like(y):
+    if isinstance(y, np.ndarray) or not hasattr(torch, "ones_like"):
+        return np.ones(np.asarray(y).shape, dtype=np.float32)
+    return torch.ones_like(y, dtype=torch.float32)
 
 
 def build_stage_f_mixed_loader(facts_bin, facts_masks, chat_bin, chat_masks, replay_bin, *, replay_ratio: float,
@@ -171,3 +182,35 @@ def build_stage_f_mixed_loader(facts_bin, facts_masks, chat_bin, chat_masks, rep
                               seed=4242, seed_offset=seed_offset)
     shares = [1.0 - replay_ratio - chat_ratio, chat_ratio, replay_ratio]
     return MultiSourceMixer([facts, chat, replay], shares, batch_size, rows_per_step)
+
+
+# ---- Stage G: four sources -----------------------------------------------------------
+
+def build_stage_g_mixed_loader(scratch_bin, scratch_masks, grounded_bin, grounded_masks, chat_bin, chat_masks,
+                               replay_bin, *, grounded_ratio: float, chat_ratio: float, replay_ratio: float,
+                               context_len: int, batch_size: int, rows_per_step: int, seed_offset: int = 0,
+                               answer_weight: float = 1.0, answer_marker: tuple[int, ...] | None = None):
+    """Scratchpad SFT (primary) + grounded-facts SFT + chat SFT, all with
+    completion-only masks, + FineWeb replay with full loss. Exact whole rows
+    per optimizer step from each source (step_weights), deterministic per rank.
+
+    answer_weight (default 1.0 = off) multiplies the loss on answer tokens:
+    the final "Answer: <int>" of scratchpad rows (tokens after answer_marker)
+    and the whole short reply of grounded rows. Chat and replay rows stay 1.0.
+    """
+    from playground_lm.train.data import build_dataloader
+    from playground_lm.train.sft_data import build_sft_dataloader
+
+    weighting = answer_weight != 1.0
+    scratch = build_sft_dataloader(scratch_bin, scratch_masks, context_len=context_len, batch_size=1, shuffle=True,
+                                   seed=42, seed_offset=seed_offset, answer_weight=answer_weight,
+                                   answer_mode="after_marker" if weighting else None, answer_marker=answer_marker)
+    grounded = build_sft_dataloader(grounded_bin, grounded_masks, context_len=context_len, batch_size=1,
+                                    shuffle=True, seed=4545, seed_offset=seed_offset, answer_weight=answer_weight,
+                                    answer_mode="completion" if weighting else None)
+    chat = build_sft_dataloader(chat_bin, chat_masks, context_len=context_len, batch_size=1,
+                                shuffle=True, seed=4343, seed_offset=seed_offset)
+    replay = build_dataloader(replay_bin, context_len=context_len, batch_size=1, shuffle=True, stride=1,
+                              seed=4242, seed_offset=seed_offset)
+    shares = [1.0 - grounded_ratio - chat_ratio - replay_ratio, grounded_ratio, chat_ratio, replay_ratio]
+    return MultiSourceMixer([scratch, grounded, chat, replay], shares, batch_size, rows_per_step)

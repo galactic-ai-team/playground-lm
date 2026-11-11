@@ -553,7 +553,7 @@ def main() -> int:
         "PLM_MAX_STEPS": str(max_steps),
         "PLM_WARMUP": str(warmup),
         "PLM_EVAL_INTERVAL": eval_iv,
-        "PLM_BATCH_SIZE": "6",
+        "PLM_BATCH_SIZE": os.environ.get("PLM_BATCH_SIZE", "6"),  # Stage G sets 5 (40-row updates)
         "PLM_SCHEDULE_START": os.environ.get("PLM_SCHEDULE_START", str(seed_step)),
         "PLM_DATA_DIR": str(DATA_DIR),
         "PLM_CHAT_DIR": os.environ.get("PLM_CHAT_DIR", ""),
@@ -561,7 +561,7 @@ def main() -> int:
         "PLM_RUN_DIR": str(RUNS_DIR),
         "PLM_RUN_ID": os.environ.get("PLM_RUN_ID", "stage-f-sft"),
         "PLM_REPO": "galactic-ai-team/playground-lm",
-        "PLM_RELEASE_TAG": "stage-f-checkpoints-candidate",
+        "PLM_RELEASE_TAG": os.environ.get("PLM_RELEASE_TAG", "stage-f-checkpoints-candidate"),
         "PLM_UPLOAD_EVERY": "1",
         "PLM_MAX_SESSION_S": str(11 * 3600),
         "PLM_RESET_OPTIMIZER": os.environ.get("PLM_RESET_OPTIMIZER", "1"),

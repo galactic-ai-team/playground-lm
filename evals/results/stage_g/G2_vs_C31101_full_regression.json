@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "kind": "stage_g_g2_full_regression_vs_C31101",
+  "written_at_et": "2026-11-11T15:23:52-05:00",
+  "promotion": "NONE",
+  "live_unchanged": "v0.5 Chat = E31140",
+  "source": {
+    "kernel": "galacticaiteam/plm-stage-g-g2-full-regression",
+    "kernel_version": 1,
+    "device": "cuda",
+    "offline": true,
+    "git_commit_evaled": "bff374d6d1e56864f0222fe65b987de480edd6da",
+    "elapsed_s": 1755.8,
+    "per_model_s": {
+      "C31101": 862.5,
+      "G2_31505": 855.5
+    },
+    "gpu_hours_script": 0.488,
+    "note": "free NvidiaTeslaT4; script wall 1755.8s (29.3 min); kernel running-to-complete ~31 min. Well under 1 GPU-h."
+  },
+  "settings": {
+    "context_len": 1024,
+    "batch_size": 4,
+    "benchmark_limit": null,
+    "max_val_batches": null,
+    "seed": 20261108,
+    "fineweb_val_sha256": "1fe7dffe2601324229e5742e23b58831291601d6f727c20f290b5f19a37aa9e7"
+  },
+  "models": {
+    "C31101": {
+      "weights_sha256": "4604d3a1b105cc70601352fbd83d6d61b34435b3cf09151b0562592a7b076275",
+      "config_sha256": "6d7dd38240d504c9a2354c72a41a4b5b559bec982c5ff070ca37442a347f4759",
+      "metrics": {
+        "val_loss": 3.174207899803583,
+        "perplexity": 23.907874933791508,
+        "hellaswag_acc_norm": 0.30033857797251545,
+        "lambada_acc": 0.2297690665631671
+      },
+      "coverage": {
+        "validation": {
+          "tokens_scored": 3594909,
+          "available_targets": 3594909,
+          "complete": true
+        },
+        "hellaswag": {
+          "examples": 10042,
+          "correct": 3016,
+          "complete": true
+        },
+        "lambada": {
+          "examples": 5153,
+          "correct": 1184,
+          "complete": true
+        }
+      },
+      "complete": true,
+      "publishable": true
+    },
+    "G2_31505": {
+      "weights_sha256": "a4710eb328e0ac7ca240ce02c5d8711586a01f405660d690053f86e0427bb6be",
+      "config_sha256": "b3fe19a324342800b4b804867bafe6ac9c3cc623647ca547201fb503b7b89401",
+      "metrics": {
+        "val_loss": 3.178433457694965,
+        "perplexity": 24.009112785950403,
+        "hellaswag_acc_norm": 0.29944234216291576,
+        "lambada_acc": 0.2287987580050456
+      },
+      "coverage": {
+        "validation": {
+          "tokens_scored": 3594909,
+          "available_targets": 3594909,
+          "complete": true
+        },
+        "hellaswag": {
+          "examples": 10042,
+          "correct": 3007,
+          "complete": true
+        },
+        "lambada": {
+          "examples": 5153,
+          "correct": 1179,
+          "complete": true
+        }
+      },
+      "complete": true,
+      "publishable": true
+    }
+  },
+  "gates": {
+    "fineweb_val_loss": {
+      "baseline": 3.174207899803583,
+      "candidate": 3.178433457694965,
+      "delta": 0.004225557891381904,
+      "limit": 0.02,
+      "status": "PASS"
+    },
+    "hellaswag": {
+      "baseline": 0.30033857797251545,
+      "candidate": 0.29944234216291576,
+      "baseline_correct": "3016/10042",
+      "candidate_correct": "3007/10042",
+      "drop_abs": 0.0008962358095996881,
+      "drop_points": 0.08962358095996881,
+      "limit_points": 1.0,
+      "status": "PASS"
+    },
+    "lambada": {
+      "baseline": 0.2297690665631671,
+      "candidate": 0.2287987580050456,
+      "baseline_correct": "1184/5153",
+      "candidate_correct": "1179/5153",
+      "drop_abs": 0.0009703085581214965,
+      "drop_points": 0.09703085581214965,
+      "limit_points": 1.5,
+      "status": "PASS"
+    },
+    "g5_overlap": {
+      "status": "PASS",
+      "not_fail": true,
+      "note": "Existing Stage G corpus G5 audit (scratchpad_v2, grounded_v3, chat vs private suites / held-out facts): exact_user 0, 13-gram 0 \u2192 PASS; exact_assistant WARN 23 on grounded_v3 only (fixed uncertainty reply by design). Owner-only audit file is not in this repo."
+    }
+  },
+  "overall": "PASS",
+  "contains_private_eval_items": false,
+  "note": "Public aggregate regression only. No private items or outputs. Promotion is NONE \u2014 v0.5 Chat (E31140) stays live unless Stephon says otherwise."
+}

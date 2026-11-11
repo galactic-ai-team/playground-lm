@@ -294,7 +294,9 @@ def build_sft_dataloader(
     vocab_size: int = GPT2_VOCAB_SIZE,
     strict: bool = True,
     log: Callable[[str], None] | None = None,
-
+    answer_weight: float = 1.0,
+    answer_mode: str | None = None,
+    answer_marker: tuple[int, ...] | None = None,
 ) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
     """Infinite iterator of (x, y) int64 batches with completion-only targets.
 
@@ -305,6 +307,11 @@ def build_sft_dataloader(
     The pair is audited before the first batch: malformed data raises
     SFTDataError here, not mid-training. The audit summary (counts only)
     goes to `log` (default: this module's logger at INFO).
+
+    Optional answer-token loss weight (Stage G, default off): with
+    answer_weight != 1.0 and an answer_mode, batches are (x, y, w) where w is
+    a float32 weight per target (see answer_weights). With the default 1.0
+    the loader yields exactly the (x, y) batches it always has.
     """
     if context_len <= 0 or batch_size <= 0:
         raise ValueError("context_len and batch_size must be positive")
@@ -312,8 +319,56 @@ def build_sft_dataloader(
     audit, layout = audit_sft_arrays(tokens, masks, context_len, eot_id, vocab_size, strict)
     (log or logger.info)(f"{Path(tokens_path).name}: {audit.summary()}")
     max_start = int(tokens.shape[0]) - (context_len + 1)
-    return _batches(tokens, masks, layout, context_len, batch_size, shuffle,
-                    seed + seed_offset, drop_last, max_start)
+    batches = _batches(tokens, masks, layout, context_len, batch_size, shuffle,
+                       seed + seed_offset, drop_last, max_start)
+    if answer_weight == 1.0 or answer_mode is None:
+        return batches
+    if answer_mode not in ANSWER_MODES:
+        raise ValueError(f"answer_mode must be one of {ANSWER_MODES}, got {answer_mode!r}")
+    if answer_mode == "after_marker" and not answer_marker:
+        raise ValueError("answer_mode 'after_marker' needs answer_marker token ids")
+    if not (answer_weight > 0 and np.isfinite(answer_weight)):
+        raise ValueError("answer_weight must be positive")
+
+    def weighted():
+        for x, y in batches:
+            w = answer_weights(np.asarray(x), np.asarray(y), answer_mode, answer_weight, answer_marker, eot_id)
+            yield x, y, torch.from_numpy(w)
+
+    return weighted()
+
+
+ANSWER_MODES = ("after_marker", "completion")
+
+
+def answer_weights(x: np.ndarray, y: np.ndarray, mode: str, weight: float,
+                   marker: tuple[int, ...] | None = None, eot_id: int = EOT_ID) -> np.ndarray:
+    """Per-target loss weights (float32, same shape as y): `weight` on answer
+    targets, 1.0 elsewhere (ignored targets don't count either way).
+
+    mode "completion": every supervised target is an answer (grounded-facts
+    rows, whose whole completion is the short answer or the not-sure line).
+    mode "after_marker": targets after the marker token sequence (e.g. the
+    tokens of " Answer:") up to and including the next EOT, i.e. the final
+    answer of a scratchpad row, not its worked steps.
+    """
+    w = np.ones(y.shape, dtype=np.float32)
+    supervised = y != IGNORE_INDEX
+    if mode == "completion":
+        w[supervised] = weight
+        return w
+    k = len(marker)
+    for r in range(x.shape[0]):
+        # Window tokens: x plus the final target (x[t+1] == y[t] where supervised).
+        tok = np.append(x[r], y[r, -1] if supervised[r, -1] else -1)
+        hits = [i + k - 1 for i in range(tok.size - k + 1) if tuple(tok[i : i + k]) == tuple(marker)]
+        for e in hits:
+            eots = np.flatnonzero(tok[e + 1 :] == eot_id)
+            q = e + 1 + int(eots[0]) if eots.size else tok.size - 1
+            t = np.arange(e, q)  # targets predicting tokens e+1 .. q
+            t = t[t < y.shape[1]]
+            w[r, t[supervised[r, t]]] = weight
+    return w
 
 
 def _batches(tokens, masks, layout, context_len, batch_size, shuffle, seed, drop_last, max_start):

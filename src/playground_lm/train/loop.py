@@ -239,13 +239,19 @@ def train(*, model, optimizer, train_loader, val_loader, checkpoint_manager,
                 optimizer.zero_grad(set_to_none=True)
                 loss_sum = torch.zeros((), device=device, dtype=torch.float32)
                 for micro in range(accum):
-                    x, y = next(train_loader)
+                    batch = next(train_loader)
+                    x, y = batch[0], batch[1]
+                    # Optional per-target loss weights (Stage G answer weighting).
+                    w = batch[2] if len(batch) > 2 else None
                     # DDP: all-reduce gradients only on the last micro-batch.
                     sync = (no_sync() if no_sync is not None and micro < accum - 1
                             else nullcontext())
                     with sync:
                         with autocast():
-                            _, loss = model(x.to(device), y.to(device))
+                            if w is None:
+                                _, loss = model(x.to(device), y.to(device))
+                            else:
+                                _, loss = model(x.to(device), y.to(device), loss_weights=w.to(device))
                             micro_loss = loss / accum
                         loss_sum += loss.detach().float()
                         if scaler is None:

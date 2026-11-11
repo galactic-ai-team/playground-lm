@@ -48,6 +48,18 @@
       "onnx_url": "https://huggingface.co/Gteam04/playground-lm-onnx/resolve/27778a045bee172529170330ada959131037da64/step_00031140.q8.onnx",
       "bytes": 179148599,
       "sha256": "0fb5504d0e98e4eeb2032a3c450ffd2b0d996bb11c8d27912be1d79b821fdee8"
+    },
+    {
+      "step": 31505,
+      "tokens_seen": 3073261568,
+      "label": "Stage G preview (G2 + fact lookup)",
+      "quant": "q8",
+      "onnx_url": "https://huggingface.co/Gteam04/playground-lm-onnx/resolve/5cb457dd7a31d51505f73e083a7f9ecc17ea54a7/previews/stage_g_g2_31505/step_00031505_g2.q8.onnx",
+      "bytes": 179148599,
+      "sha256": "f7a76210291f00d9eaca0fe12f4c74fdc3be6ad71475af447777c9a3fd5792de",
+      "fact_lookup": true,
+      "fact_sheet_sha256": "f6ec9c14c29d55dc50cbd4c855a6de9e9654b65c765d1449a02d039e24c2ed33",
+      "preview_only": true
     }
   ],
   "benchmarks": {
