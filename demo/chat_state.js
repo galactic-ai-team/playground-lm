@@ -94,7 +94,7 @@ function collapseSpace(text) {
  * Facts are ranked best-first; the lowest-ranked ones are dropped until the facts part
  * fits `budget` tokens (by `encode` when given, else ~4 chars/token). Never mutates input.
  */
-export function buildFactsQuestion(question, facts, { encode = null, budget = FACTS_TOKEN_BUDGET } = {}) {
+export function buildFactsQuestion(question, facts, { encode = null, budget = FACTS_TOKEN_BUDGET, noneMarker = false } = {}) {
   const texts = (Array.isArray(facts) ? facts : [])
     .map((f) => collapseSpace(typeof f === 'string' ? f : f && f.text))
     .filter(Boolean);
@@ -108,7 +108,9 @@ export function buildFactsQuestion(question, facts, { encode = null, budget = FA
     }
     kept = kept.slice(0, -1);
   }
-  return { content: q, used: 0 };
+  // Fact-lookup checkpoints (Stage G) were scored with "Facts: (none) Question: q"
+  // when retrieval finds nothing (evals/stage_g_scoring.py); v0.5 keeps the bare question.
+  return { content: noneMarker ? `Facts: (none) Question: ${q}` : q, used: 0 };
 }
 
 /**
@@ -121,7 +123,8 @@ export function buildFactsQuestion(question, facts, { encode = null, budget = FA
  * unchanged. Without facts the output is byte-identical to v0.5 Chat.
  */
 export function formatChatPrompt(messages, options = {}) {
-  const facts = Array.isArray(options.facts) && options.facts.length > 0 ? options.facts : null;
+  const factLookup = options.factLookup === true;
+  const facts = Array.isArray(options.facts) && options.facts.length > 0 ? options.facts : (factLookup ? [] : null);
   const list = messages || [];
   let newestUser = -1;
   if (facts) {
@@ -144,6 +147,7 @@ export function formatChatPrompt(messages, options = {}) {
         const { content } = buildFactsQuestion(raw, facts, {
           encode: options.encode || null,
           budget: options.factsBudget ?? FACTS_TOKEN_BUDGET,
+          noneMarker: factLookup,
         });
         lines.push(`User: ${content}`);
       } else {
@@ -170,8 +174,9 @@ export function trimMessagesToBudget(messages, encode, {
   maxTurns = null,
   facts = null,
   factsBudget = FACTS_TOKEN_BUDGET,
+  factLookup = false,
 } = {}) {
-  const fmtOpts = facts ? { facts, encode, factsBudget } : {};
+  const fmtOpts = facts || factLookup ? { facts, encode, factsBudget, factLookup } : {};
   const budget = Math.max(8, contextLength - Math.max(1, reserveNewTokens) - 4);
   let list = (Array.isArray(messages) ? messages : []).filter(
     (m) => m && typeof m.content === 'string' && m.content.trim().length > 0

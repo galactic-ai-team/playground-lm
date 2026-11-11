@@ -107,3 +107,48 @@ test('trimMessagesToBudget threads facts through and still fits the context', ()
   const plain = trimMessagesToBudget(msgs, fakeEncode, { contextLength: 1024 });
   assert.equal(plain.prompt, 'User: Capital of France?\nAssistant:');
 });
+
+// --- Stage G app wiring (Lumi) ---
+import { parseFactSheet, lookupFacts, FACT_TOP_K } from './fact_retrieval.js';
+import { readFileSync as _rf } from 'node:fs';
+import { createHash } from 'node:crypto';
+
+test('demo/facts copy is byte-identical to fact sheet v1 (sha f6ec9c14…)', () => {
+  const raw = _rf(new URL('./facts/fact_sheet.jsonl', import.meta.url));
+  assert.equal(createHash('sha256').update(raw).digest('hex'),
+    'f6ec9c14c29d55dc50cbd4c855a6de9e9654b65c765d1449a02d039e24c2ed33');
+  assert.equal(parseFactSheet(raw.toString('utf8')).length, SHEET.length);
+});
+
+test('lookupFacts returns top-3 fact texts, best first', () => {
+  const idx = buildIndex(parseFactSheet(_rf(new URL('./facts/fact_sheet.jsonl', import.meta.url), 'utf8')));
+  const got = lookupFacts(idx, 'What is the capital of Albania?');
+  assert.ok(got.length > 0 && got.length <= FACT_TOP_K);
+  assert.match(got[0], /Tirana/);
+  assert.deepEqual(lookupFacts(idx, 'zzqx qqzv'), []);
+});
+
+test('fact-lookup checkpoints: Facts line on newest user turn, (none) when empty', () => {
+  const msgs = [createMessage('user', 'hi'), createMessage('assistant', 'Hello!'), createMessage('user', 'Capital of France?')];
+  const withFacts = formatChatPrompt(msgs, { facts: ['Paris is the capital of France.'], factLookup: true });
+  assert.ok(withFacts.endsWith('User: Facts: [1] Paris is the capital of France. Question: Capital of France?\nAssistant:'));
+  assert.ok(withFacts.startsWith('User: hi\nAssistant: Hello!\n'));
+  const none = formatChatPrompt(msgs, { facts: [], factLookup: true });
+  assert.ok(none.endsWith('User: Facts: (none) Question: Capital of France?\nAssistant:'));
+  const packed = trimMessagesToBudget(msgs, fakeEncode, { facts: [], factLookup: true });
+  assert.ok(packed.prompt.endsWith('Facts: (none) Question: Capital of France?\nAssistant:'));
+});
+
+test('v0.5 checkpoints (no factLookup) stay byte-identical', () => {
+  const msgs = [createMessage('user', 'Capital of France?')];
+  assert.equal(formatChatPrompt(msgs), 'User: Capital of France?\nAssistant:');
+  assert.equal(formatChatPrompt(msgs, { facts: [] }), 'User: Capital of France?\nAssistant:');
+  assert.equal(trimMessagesToBudget(msgs, fakeEncode).prompt, 'User: Capital of France?\nAssistant:');
+});
+
+test('app.js gates fact lookup on manifest fact_lookup and passes factLookup', () => {
+  const app = _rf(new URL('./app.js', import.meta.url), 'utf8');
+  assert.match(app, /activeCheckpoint\.fact_lookup === true/);
+  assert.match(app, /factLookup: true/);
+  assert.match(app, /\.\/facts\/fact_sheet\.jsonl/);
+});

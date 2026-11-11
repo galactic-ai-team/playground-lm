@@ -98,3 +98,14 @@ export function retrieve(index, query, { k = 3, minScore = 0.0 } = {}) {
     .slice(0, k)
     .map(s => ({ id: s.id, text: s.text, score: s.score }));
 }
+
+// Stage G app wiring helpers (Lumi): JSONL sheet -> facts; top-3 texts for a question.
+export const FACT_TOP_K = 3;
+
+export function parseFactSheet(text) {
+  return String(text || '').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
+}
+
+export function lookupFacts(index, question, k = FACT_TOP_K) {
+  return retrieve(index, question, { k }).map((r) => r.text);
+}
