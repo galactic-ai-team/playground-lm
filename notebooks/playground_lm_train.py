@@ -128,6 +128,10 @@ MODEL_CONFIG = {
     "d_model": 768,
     "context_len": 1024,
 }
+# Stage G Track 2 (Lumi glue): grown models set their shape by env; unset = 124M.
+for _k, _env in (("n_layers", "PLM_N_LAYERS"), ("n_heads", "PLM_N_HEADS"), ("d_model", "PLM_D_MODEL")):
+    if os.environ.get(_env):
+        MODEL_CONFIG[_k] = int(os.environ[_env])
 
 # --- Stage presets + env overrides (logic in stage_config.py) ----------
 # Resolved before the batch size, because a stage can set its own global
